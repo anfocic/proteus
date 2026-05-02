@@ -14,6 +14,7 @@ type ChatRole = "system" | "user" | "assistant" | "tool";
 interface ChatMessage {
   role: ChatRole;
   content?: string | null;
+  reasoning_content?: string;
   tool_call_id?: string;
   tool_calls?: Array<{
     id: string;
@@ -41,6 +42,7 @@ interface ChatResponse {
     message: {
       role: "assistant";
       content: string | null;
+      reasoning_content?: string | null;
       tool_calls?: Array<{
         id: string;
         type: "function";
@@ -101,6 +103,11 @@ export function openaiCompat(opts: {
       const msg = choice.message;
 
       const content: ContentBlock[] = [];
+      // Capture reasoning even if empty — some providers (Moonshot/Kimi) require
+      // the field be present on echoes when thinking is enabled.
+      if (typeof msg.reasoning_content === "string") {
+        content.push({ type: "reasoning", text: msg.reasoning_content });
+      }
       if (msg.content) content.push({ type: "text", text: msg.content });
       for (const call of msg.tool_calls ?? []) {
         if (call.type !== "function") continue;
@@ -146,6 +153,10 @@ function toOpenAIMessages(msg: Message): ChatMessage[] {
   // assistant
   const blocks = msg.content;
   const texts = blocks.filter((b) => b.type === "text") as Array<{ type: "text"; text: string }>;
+  const reasonings = blocks.filter((b) => b.type === "reasoning") as Array<{
+    type: "reasoning";
+    text: string;
+  }>;
   const toolUses = blocks.filter((b) => b.type === "tool_use") as Array<{
     type: "tool_use";
     id: string;
@@ -162,6 +173,12 @@ function toOpenAIMessages(msg: Message): ChatMessage[] {
       type: "function",
       function: { name: t.name, arguments: JSON.stringify(t.input) },
     }));
+    // Moonshot/Kimi requires reasoning_content to be present on assistant
+    // tool-call echoes when thinking is enabled. Default to empty string so
+    // the field exists even when the provider returned no reasoning.
+    out.reasoning_content = reasonings.map((r) => r.text).join("");
+  } else if (reasonings.length > 0) {
+    out.reasoning_content = reasonings.map((r) => r.text).join("");
   }
   return [out];
 }

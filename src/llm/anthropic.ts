@@ -101,13 +101,16 @@ function toAnthropicMessage(msg: Message): AnthropicMessage {
   if (typeof msg.content === "string") {
     return { role: msg.role, content: msg.content };
   }
-  return {
-    role: msg.role,
-    content: msg.content.map((b): AnthropicContentBlock => {
-      if (b.type === "text") return { type: "text", text: b.text };
-      return { type: "tool_use", id: b.id, name: b.name, input: b.input };
-    }),
-  };
+  const blocks: AnthropicContentBlock[] = [];
+  for (const b of msg.content) {
+    if (b.type === "text") blocks.push({ type: "text", text: b.text });
+    else if (b.type === "tool_use") {
+      blocks.push({ type: "tool_use", id: b.id, name: b.name, input: b.input });
+    }
+    // reasoning blocks are dropped on the way out — Anthropic uses a different
+    // thinking-block shape that we don't support yet
+  }
+  return { role: msg.role, content: blocks };
 }
 
 function fromAnthropicBlock(
