@@ -1,6 +1,12 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { Message } from "../llm/types.ts";
-import { runAgent, type RunAgentResult, type ToolDef } from "./run.ts";
+import {
+  runAgent,
+  streamAgent,
+  type AgentEvent,
+  type RunAgentResult,
+  type ToolDef,
+} from "./run.ts";
 
 export interface Specialist<TServices = Record<string, unknown>> {
   name: string;
@@ -40,5 +46,22 @@ export async function runSpecialist<TServices>(
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
+  });
+}
+
+export async function* streamSpecialist<TServices>(
+  opts: RunSpecialistOpts<TServices> & { signal?: AbortSignal },
+): AsyncGenerator<AgentEvent, RunAgentResult, void> {
+  return yield* streamAgent({
+    llm: opts.llm,
+    model: opts.specialist.model ?? opts.defaultModel,
+    system: opts.specialist.role,
+    tools: opts.specialist.tools,
+    messages: opts.messages,
+    services: opts.services,
+    maxIterations: opts.maxIterations,
+    maxTokens: opts.maxTokens,
+    temperature: opts.temperature,
+    signal: opts.signal,
   });
 }

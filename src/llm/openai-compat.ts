@@ -5,7 +5,10 @@ import type {
   ContentBlock,
   Message,
   StopReason,
+  StreamEvent,
+  Usage,
 } from "./types.ts";
+import { parseSSE, type SSERecord } from "./sse.ts";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
@@ -131,7 +134,247 @@ export function openaiCompat(opts: {
         raw: data,
       };
     },
+
+    async *stream(req, streamOpts) {
+      const signal = streamOpts?.signal;
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("aborted", "AbortError");
+      }
+
+      const messages: ChatMessage[] = [];
+      if (req.system) messages.push({ role: "system", content: req.system });
+      for (const m of req.messages) messages.push(...toOpenAIMessages(m));
+
+      const body = {
+        model: req.model || opts.defaultModel || "gpt-4o",
+        messages,
+        tools: req.tools?.map((t) => ({
+          type: "function",
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema,
+          },
+        })),
+        tool_choice: req.toolChoice
+          ? req.toolChoice.type === "any" ? "required" : "auto"
+          : undefined,
+        max_tokens: req.maxTokens,
+        temperature: req.temperature,
+        stream: true,
+        stream_options: { include_usage: true },
+      };
+
+      const ctrl = new AbortController();
+      const onAbort = () => ctrl.abort(signal?.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      let res: Response;
+      try {
+        res = await fetch(`${baseURL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${opts.apiKey}`,
+          },
+          body: JSON.stringify(stripUndefined(body as unknown as Record<string, unknown>)),
+          signal: ctrl.signal,
+        });
+      } catch (e) {
+        signal?.removeEventListener("abort", onAbort);
+        throw e;
+      }
+
+      if (!res.ok) {
+        const text = await res.text();
+        signal?.removeEventListener("abort", onAbort);
+        throw new Error(`OpenAI ${res.status}: ${text}`);
+      }
+      if (!res.body) {
+        signal?.removeEventListener("abort", onAbort);
+        throw new Error("OpenAI stream: response has no body");
+      }
+
+      try {
+        yield* streamFromOpenAISSE(parseSSE(res.body, ctrl.signal));
+      } finally {
+        ctrl.abort();
+        signal?.removeEventListener("abort", onAbort);
+      }
+    },
   };
+}
+
+interface OpenAIStreamChoice {
+  index?: number;
+  finish_reason?: string | null;
+  delta?: {
+    role?: string;
+    content?: string | null;
+    reasoning_content?: string | null;
+    tool_calls?: Array<{
+      index?: number;
+      id?: string;
+      type?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+  };
+}
+interface OpenAIStreamChunk {
+  id?: string;
+  choices?: OpenAIStreamChoice[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+interface ToolAccum {
+  index: number;          // normalized (our) index
+  id?: string;
+  name?: string;
+  args: string;
+  startEmitted: boolean;
+  stopEmitted: boolean;
+}
+
+export async function* streamFromOpenAISSE(
+  records: AsyncIterable<SSERecord>,
+): AsyncGenerator<StreamEvent, void, void> {
+  let messageIdSent = false;
+  let textIndex: number | undefined;
+  let reasoningIndex: number | undefined;
+  let nextNormalIndex = 0;
+  const tools = new Map<number, ToolAccum>();   // keyed by provider index
+  const textChunks: string[] = [];
+  const reasoningChunks: string[] = [];
+  let stopReason: StopReason = "error";
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+
+  for await (const rec of records) {
+    if (rec.data === "[DONE]") break;
+
+    let chunk: OpenAIStreamChunk;
+    try {
+      chunk = JSON.parse(rec.data);
+    } catch {
+      continue;
+    }
+
+    if (!messageIdSent) {
+      messageIdSent = true;
+      yield chunk.id ? { type: "message_start", id: chunk.id } : { type: "message_start" };
+    }
+
+    if (chunk.usage) {
+      usage.inputTokens = chunk.usage.prompt_tokens ?? usage.inputTokens;
+      usage.outputTokens = chunk.usage.completion_tokens ?? usage.outputTokens;
+    }
+
+    const choice = chunk.choices?.[0];
+    if (!choice) continue;
+
+    const delta = choice.delta;
+    if (delta) {
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+        if (reasoningIndex === undefined) reasoningIndex = nextNormalIndex++;
+        reasoningChunks.push(delta.reasoning_content);
+        yield { type: "reasoning_delta", index: reasoningIndex, text: delta.reasoning_content };
+      }
+
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        if (textIndex === undefined) textIndex = nextNormalIndex++;
+        textChunks.push(delta.content);
+        yield { type: "text_delta", index: textIndex, text: delta.content };
+      }
+
+      if (delta.tool_calls) {
+        for (let arrPos = 0; arrPos < delta.tool_calls.length; arrPos++) {
+          const tc = delta.tool_calls[arrPos];
+          // Provider index, with fallback to array position when omitted
+          // (some compat hosts drop it on single-tool calls).
+          const provIdx = tc.index ?? arrPos;
+          let accum = tools.get(provIdx);
+          if (!accum) {
+            accum = {
+              index: nextNormalIndex++,
+              args: "",
+              startEmitted: false,
+              stopEmitted: false,
+            };
+            tools.set(provIdx, accum);
+          }
+          if (tc.id !== undefined) accum.id = tc.id;
+          if (tc.function?.name !== undefined) accum.name = tc.function.name;
+          if (tc.function?.arguments !== undefined) accum.args += tc.function.arguments;
+
+          if (!accum.startEmitted && accum.id !== undefined && accum.name !== undefined) {
+            accum.startEmitted = true;
+            yield { type: "tool_use_start", index: accum.index, id: accum.id, name: accum.name };
+          }
+        }
+      }
+    }
+
+    if (choice.finish_reason) {
+      stopReason = mapFinishReason(choice.finish_reason);
+
+      // Close any open tool blocks with parsed input.
+      for (const accum of tools.values()) {
+        if (accum.stopEmitted) continue;
+        if (!accum.startEmitted && accum.id !== undefined && accum.name !== undefined) {
+          accum.startEmitted = true;
+          yield { type: "tool_use_start", index: accum.index, id: accum.id, name: accum.name };
+        }
+        if (!accum.startEmitted) continue; // truly orphan (no id/name ever) — drop
+
+        let input: unknown = {};
+        if (accum.args) {
+          try {
+            input = JSON.parse(accum.args);
+          } catch {
+            input = { _raw: accum.args };
+          }
+        }
+        accum.stopEmitted = true;
+        yield { type: "tool_use_stop", index: accum.index, input };
+      }
+
+      // Assemble final content in normalized index order.
+      const content: ContentBlock[] = [];
+      type Entry = { idx: number; block: ContentBlock };
+      const entries: Entry[] = [];
+      if (reasoningIndex !== undefined) {
+        entries.push({
+          idx: reasoningIndex,
+          block: { type: "reasoning", text: reasoningChunks.join("") },
+        });
+      }
+      if (textIndex !== undefined) {
+        entries.push({
+          idx: textIndex,
+          block: { type: "text", text: textChunks.join("") },
+        });
+      }
+      for (const accum of tools.values()) {
+        if (!accum.startEmitted || accum.id === undefined || accum.name === undefined) continue;
+        let input: unknown = {};
+        if (accum.args) {
+          try {
+            input = JSON.parse(accum.args);
+          } catch {
+            input = { _raw: accum.args };
+          }
+        }
+        entries.push({
+          idx: accum.index,
+          block: { type: "tool_use", id: accum.id, name: accum.name, input },
+        });
+      }
+      entries.sort((a, b) => a.idx - b.idx);
+      for (const e of entries) content.push(e.block);
+
+      yield { type: "message_stop", stopReason, usage, content };
+      return;
+    }
+  }
 }
 
 function toOpenAIMessages(msg: Message): ChatMessage[] {

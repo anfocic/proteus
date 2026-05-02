@@ -49,6 +49,10 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 Bounded by `maxIterations` (default 5). No confirmation gate, no concurrency limit, no formatGuide — those are all things to *grow into* if/when the abstraction proves out, not things to retrofit prematurely.
 
+### Streaming
+
+`LLMProvider` exposes a parallel `stream(req, { signal? })` method returning `AsyncGenerator<StreamEvent>`. `complete()` is unchanged — buffered consumers pay no SSE-parsing tax. `streamAgent` (and `streamSpecialist`) yield `AgentEvent`s that interleave provider deltas with `tool_dispatch_start`/`tool_dispatch_done` and a final `agent_done`. `orchestrate` and the channel layer stay buffered. ADR 0004 records the decisions: scope = provider + runAgent, parallel methods (not unified-on-stream), normalized provider-shape events, AsyncGenerator API. Both adapters share `src/llm/sse.ts`. Both expose internal `streamFromAnthropicSSE` / `streamFromOpenAISSE` async generators that the tests target directly — no `globalThis.fetch` shimming.
+
 ### Orchestration layer
 
 Phase 2 added a thin router → specialist → tool stack on top of `runAgent`:
@@ -80,7 +84,7 @@ The PoC is deliberately minimal. None of the following exist or should be added 
 - Confirmation gate / WRITE_TOOLS taxonomy
 - Caching strategy / cache breakpoint hints
 - Usage / cost tracking
-- Streaming (no `stream` method on `LLMProvider`)
+- Channel-layer streaming (HTTP SSE response, Telegram message-edit streaming)
 - Error taxonomy (`LLMError` class — adapters currently throw raw `Error`)
 - Additional adapters beyond the two protocol shapes
 - Multi-specialist chain/parallel orchestration modes

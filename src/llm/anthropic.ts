@@ -5,7 +5,10 @@ import type {
   ContentBlock,
   Message,
   StopReason,
+  StreamEvent,
+  Usage,
 } from "./types.ts";
+import { parseSSE, type SSERecord } from "./sse.ts";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -81,7 +84,201 @@ export function anthropic(opts: {
         raw: data,
       };
     },
+
+    async *stream(req, streamOpts) {
+      const signal = streamOpts?.signal;
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("aborted", "AbortError");
+      }
+
+      const body = {
+        model: req.model || opts.defaultModel || "claude-sonnet-4-5",
+        max_tokens: req.maxTokens ?? 1024,
+        system: req.system,
+        messages: req.messages.map(toAnthropicMessage),
+        tools: req.tools?.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.inputSchema,
+        })),
+        tool_choice: req.toolChoice,
+        temperature: req.temperature,
+        stream: true,
+      };
+
+      const ctrl = new AbortController();
+      const onAbort = () => ctrl.abort(signal?.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      let res: Response;
+      try {
+        res = await fetch(`${baseURL}/v1/messages`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": opts.apiKey,
+            "anthropic-version": ANTHROPIC_VERSION,
+          },
+          body: JSON.stringify(stripUndefined(body)),
+          signal: ctrl.signal,
+        });
+      } catch (e) {
+        signal?.removeEventListener("abort", onAbort);
+        throw e;
+      }
+
+      if (!res.ok) {
+        const text = await res.text();
+        signal?.removeEventListener("abort", onAbort);
+        throw new Error(`Anthropic ${res.status}: ${text}`);
+      }
+      if (!res.body) {
+        signal?.removeEventListener("abort", onAbort);
+        throw new Error("Anthropic stream: response has no body");
+      }
+
+      try {
+        yield* streamFromAnthropicSSE(parseSSE(res.body, ctrl.signal));
+      } finally {
+        ctrl.abort();
+        signal?.removeEventListener("abort", onAbort);
+      }
+    },
   };
+}
+
+interface AnthropicMessageStart {
+  type: "message_start";
+  message: { id: string; usage?: { input_tokens?: number; output_tokens?: number } };
+}
+interface AnthropicContentBlockStart {
+  type: "content_block_start";
+  index: number;
+  content_block:
+    | { type: "text"; text: string }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+    | { type: string };
+}
+interface AnthropicContentBlockDelta {
+  type: "content_block_delta";
+  index: number;
+  delta:
+    | { type: "text_delta"; text: string }
+    | { type: "input_json_delta"; partial_json: string }
+    | { type: string };
+}
+interface AnthropicContentBlockStop {
+  type: "content_block_stop";
+  index: number;
+}
+interface AnthropicMessageDelta {
+  type: "message_delta";
+  delta: { stop_reason?: string | null };
+  usage?: { output_tokens?: number };
+}
+interface AnthropicMessageStop {
+  type: "message_stop";
+}
+type AnthropicStreamPayload =
+  | AnthropicMessageStart
+  | AnthropicContentBlockStart
+  | AnthropicContentBlockDelta
+  | AnthropicContentBlockStop
+  | AnthropicMessageDelta
+  | AnthropicMessageStop
+  | { type: string };
+
+export async function* streamFromAnthropicSSE(
+  records: AsyncIterable<SSERecord>,
+): AsyncGenerator<StreamEvent, void, void> {
+  const blocks = new Map<number, ContentBlock>();
+  const partialJson = new Map<number, string>();
+  let stopReason: StopReason = "error";
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+
+  for await (const rec of records) {
+    let payload: AnthropicStreamPayload;
+    try {
+      payload = JSON.parse(rec.data);
+    } catch {
+      continue;
+    }
+
+    switch (payload.type) {
+      case "message_start": {
+        const p = payload as AnthropicMessageStart;
+        usage.inputTokens = p.message.usage?.input_tokens ?? 0;
+        usage.outputTokens = p.message.usage?.output_tokens ?? 0;
+        yield { type: "message_start", id: p.message.id };
+        break;
+      }
+      case "content_block_start": {
+        const p = payload as AnthropicContentBlockStart;
+        if (p.content_block.type === "text") {
+          blocks.set(p.index, { type: "text", text: "" });
+        } else if (p.content_block.type === "tool_use") {
+          const cb = p.content_block as { type: "tool_use"; id: string; name: string };
+          blocks.set(p.index, { type: "tool_use", id: cb.id, name: cb.name, input: {} });
+          partialJson.set(p.index, "");
+          yield { type: "tool_use_start", index: p.index, id: cb.id, name: cb.name };
+        }
+        // ignore thinking and other unknown block types
+        break;
+      }
+      case "content_block_delta": {
+        const p = payload as AnthropicContentBlockDelta;
+        if (p.delta.type === "text_delta") {
+          const d = p.delta as { type: "text_delta"; text: string };
+          const block = blocks.get(p.index);
+          if (block && block.type === "text") block.text += d.text;
+          yield { type: "text_delta", index: p.index, text: d.text };
+        } else if (p.delta.type === "input_json_delta") {
+          const d = p.delta as { type: "input_json_delta"; partial_json: string };
+          partialJson.set(p.index, (partialJson.get(p.index) ?? "") + d.partial_json);
+        }
+        break;
+      }
+      case "content_block_stop": {
+        const p = payload as AnthropicContentBlockStop;
+        const block = blocks.get(p.index);
+        if (block && block.type === "tool_use") {
+          const accum = partialJson.get(p.index) ?? "";
+          let input: unknown = {};
+          if (accum) {
+            try {
+              input = JSON.parse(accum);
+            } catch {
+              input = { _raw: accum };
+            }
+          }
+          block.input = input;
+          yield { type: "tool_use_stop", index: p.index, input };
+        }
+        break;
+      }
+      case "message_delta": {
+        const p = payload as AnthropicMessageDelta;
+        if (p.delta.stop_reason !== undefined) {
+          stopReason = mapStopReason(p.delta.stop_reason);
+        }
+        if (p.usage?.output_tokens !== undefined) {
+          usage.outputTokens = p.usage.output_tokens;
+        }
+        break;
+      }
+      case "message_stop": {
+        const ordered: ContentBlock[] = [];
+        const indices = [...blocks.keys()].sort((a, b) => a - b);
+        for (const i of indices) {
+          const b = blocks.get(i);
+          if (b) ordered.push(b);
+        }
+        yield { type: "message_stop", stopReason, usage, content: ordered };
+        return;
+      }
+      // ping, error, and unknown event types are ignored
+    }
+  }
 }
 
 function toAnthropicMessage(msg: Message): AnthropicMessage {
