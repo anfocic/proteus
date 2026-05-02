@@ -49,12 +49,23 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 Bounded by `maxIterations` (default 5). No confirmation gate, no concurrency limit, no formatGuide — those are all things to *grow into* if/when the abstraction proves out, not things to retrofit prematurely.
 
+### Orchestration layer
+
+Phase 2 added a thin router → specialist → tool stack on top of `runAgent`:
+
+- `ToolContext<TServices>` (`src/agent/context.ts`) — opaque dict of `services` threaded into every tool handler. Proteus never inspects it.
+- `Specialist<TServices>` (`src/agent/specialist.ts`) — `{ name, description, role, tools, model? }`. `runSpecialist` invokes `runAgent` with the specialist's `role` as the system prompt and its tools.
+- `classifyIntent` (`src/agent/router.ts`) — single LLM call, low temperature, returns the chosen intent name. Three-tier matching: exact → substring containment (longest-name-first) → fallback. Reads `text` blocks, falls back to `reasoning` blocks if text is empty (handles thinking models like GLM that consume `maxTokens` on reasoning before producing content).
+- `orchestrate` (`src/agent/orchestrate.ts`) — `classifyIntent` → pick specialist → `runSpecialist`. Caller passes separate `routerModel` and `specialistModel` so cheap routing + capable specialist is one config away.
+
+Hard rule unchanged: nothing in `src/agent/` may import an adapter file. Only `src/llm/types.ts` and `src/llm/provider.ts`.
+
+History caveat: `OrchestrateOpts.history` should contain only `user` and plain-text `assistant` messages. Tool transcripts from a prior specialist are unsafe to re-feed because tool ids won't match the next specialist's schema.
+
 ## What does *not* belong here yet
 
 The PoC is deliberately minimal. None of the following exist or should be added without a concrete reason driven by a real consumer:
 
-- Router / intent classification
-- Multiple specialists / specialist registry
 - Channel adapters (Telegram, HTTP, etc.)
 - Confirmation gate / WRITE_TOOLS taxonomy
 - Caching strategy / cache breakpoint hints
@@ -62,7 +73,8 @@ The PoC is deliberately minimal. None of the following exist or should be added 
 - Streaming (no `stream` method on `LLMProvider`)
 - Error taxonomy (`LLMError` class — adapters currently throw raw `Error`)
 - Additional adapters beyond the two protocol shapes
-- Tests beyond the demo
+- Multi-specialist chain/parallel orchestration modes
+- Evaluator (response quality gate)
 
 If a future task asks for one of these, the right move is usually to push back: confirm there's a real call site that needs it before adding it. The PoC's value is in being small enough that the abstraction is legible.
 

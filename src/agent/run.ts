@@ -1,16 +1,18 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { ContentBlock, Message, ToolSchema } from "../llm/types.ts";
+import type { ToolContext } from "./context.ts";
 
-export interface ToolDef extends ToolSchema {
-  handler: (input: unknown) => Promise<string> | string;
+export interface ToolDef<TInput = unknown, TServices = Record<string, unknown>> extends ToolSchema {
+  handler: (input: TInput, ctx: ToolContext<TServices>) => Promise<string> | string;
 }
 
-export interface RunAgentInput {
+export interface RunAgentInput<TServices = Record<string, unknown>> {
   llm: LLMProvider;
   model: string;
   system?: string;
-  tools: ToolDef[];
+  tools: ToolDef<unknown, TServices>[];
   messages: Message[];
+  services?: TServices;
   maxIterations?: number;
   maxTokens?: number;
   temperature?: number;
@@ -23,7 +25,9 @@ export interface RunAgentResult {
   stopReason: "end_turn" | "max_iterations" | "max_tokens" | "error";
 }
 
-export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
+export async function runAgent<TServices = Record<string, unknown>>(
+  input: RunAgentInput<TServices>,
+): Promise<RunAgentResult> {
   const maxIterations = input.maxIterations ?? 5;
   const handlers = new Map(input.tools.map((t) => [t.name, t.handler]));
   const toolSchemas: ToolSchema[] = input.tools.map(({ name, description, inputSchema }) => ({
@@ -31,6 +35,9 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     description,
     inputSchema,
   }));
+  const ctx: ToolContext<TServices> = {
+    services: input.services ?? ({} as TServices),
+  };
 
   const messages: Message[] = [...input.messages];
   let iterations = 0;
@@ -100,7 +107,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
           return { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true };
         }
         try {
-          const out = await handler(tu.input);
+          const out = await handler(tu.input, ctx);
           return { toolUseId: tu.id, content: out, isError: false };
         } catch (err) {
           return {

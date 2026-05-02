@@ -11,5 +11,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*", "demo/**/*"]
+  "include": ["src/**/*", "demo/**/*", "test/**/*"]
 }

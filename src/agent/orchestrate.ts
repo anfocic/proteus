@@ -1,0 +1,61 @@
+import type { LLMProvider } from "../llm/provider.ts";
+import type { Message } from "../llm/types.ts";
+import { classifyIntent, type Intent } from "./router.ts";
+import type { RunAgentResult } from "./run.ts";
+import { runSpecialist, type Specialist } from "./specialist.ts";
+
+export interface OrchestrateOpts<TServices> {
+  llm: LLMProvider;
+  routerModel: string;
+  specialistModel: string;
+  specialists: Specialist<TServices>[];
+  services: TServices;
+  message: string;
+  /**
+   * Prior conversation. Should contain only `user` and plain-text `assistant`
+   * messages. Tool transcripts (assistant `tool_use` blocks + `tool_result`
+   * messages) from a prior specialist are unsafe to re-feed: a different
+   * specialist invoked next turn won't have those tool ids in its schema and
+   * the upstream provider may reject the request.
+   */
+  history?: Message[];
+}
+
+export interface OrchestrateResult extends RunAgentResult {
+  routedTo: string;
+  routerRaw: string;
+}
+
+export async function orchestrate<TServices>(
+  opts: OrchestrateOpts<TServices>,
+): Promise<OrchestrateResult> {
+  if (opts.specialists.length === 0) {
+    throw new Error("orchestrate: specialists must be non-empty");
+  }
+
+  const intents: Intent[] = opts.specialists.map((s) => ({
+    name: s.name,
+    description: s.description,
+  }));
+
+  const cls = await classifyIntent({
+    llm: opts.llm,
+    model: opts.routerModel,
+    intents,
+    message: opts.message,
+    history: opts.history,
+  });
+
+  const chosen =
+    opts.specialists.find((s) => s.name === cls.intent) ?? opts.specialists[0];
+
+  const result = await runSpecialist({
+    llm: opts.llm,
+    specialist: chosen,
+    defaultModel: opts.specialistModel,
+    messages: [...(opts.history ?? []), { role: "user", content: opts.message }],
+    services: opts.services,
+  });
+
+  return { ...result, routedTo: chosen.name, routerRaw: cls.raw };
+}

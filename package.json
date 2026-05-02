@@ -5,8 +5,10 @@
   "type": "module",
   "description": "Provider-agnostic agent framework — proof of concept",
   "scripts": {
-    "demo": "tsx demo/weather.ts",
-    "demo:multi": "tsx demo/multi-tool.ts",
+    "demo": "node --env-file-if-exists=.env --import tsx demo/weather.ts",
+    "demo:multi": "node --env-file-if-exists=.env --import tsx demo/multi-tool.ts",
+    "demo:triage": "node --env-file-if-exists=.env --import tsx demo/triage.ts",
+    "test": "node --import tsx --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
