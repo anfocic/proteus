@@ -28,7 +28,7 @@ No framework integration (Express/Hono/Fastify). Consumers wrap it. Telegram lan
 **Buys**
 - Forces the channel/orchestration boundary to be pure data (`{ sessionId, message }`). No webhook signatures or SDK types leak into core.
 - Trivially testable: call the handler directly, no HTTP server.
-- Telegram, Slack, CLI all become 30-line wrappers.
+- Telegram, Slack, CLI all become single-file wrappers with no new runtime deps.
 
 **Costs**
 - One extra hop for the production target. Telegram lands one PR later, not zero.

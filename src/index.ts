@@ -28,3 +28,9 @@ export type {
   ChatRequest,
   ChatResponse,
 } from "./channel/http.ts";
+export { processUpdate, runPolling } from "./channel/telegram.ts";
+export type {
+  TelegramUpdate,
+  TelegramDeps,
+  PollingOpts,
+} from "./channel/telegram.ts";
