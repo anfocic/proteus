@@ -11,21 +11,20 @@ Proteus is a portfolio PoC that needs to run on a laptop, in CI, and in a single
 
 ## Decision
 
-Ship `runPolling` only. Export `processUpdate(update, deps)` as a separate pure function so a webhook adapter can be added later as a ~10-line wrapper:
+Ship `runPolling` for local/PoC deployments. Export `processUpdate(update, deps)` as a separate pure function and ship `createWebhookHandler(opts)` as the framework-agnostic wrapper for production deployments behind a public TLS endpoint.
 
-```ts
-// hypothetical webhook handler
-async (req) => processUpdate(await req.json(), deps);
-```
+The two-function split is the load-bearing part of this ADR. Long-poll vs webhook is the easy part — what matters is that update mapping and reply formatting live in `processUpdate`, not in either transport.
 
-The two-function split is the load-bearing part of this ADR. Long-poll vs webhook is the easy part — what matters is that update mapping and reply formatting live in `processUpdate`, not in the loop.
+`createWebhookHandler` returns a `(req) => { status, body? }` function with no HTTP framework dep. `req` accepts either a Web `Headers` object or a plain header dict, so consumers can wrap a Node `IncomingMessage`, a Hono/Express request, or a Cloudflare Worker `Request` in a few lines. It validates `X-Telegram-Bot-Api-Secret-Token` when configured, returns 401 on mismatch, 400 on malformed JSON, 200 otherwise.
+
+The wrapper is ~30 lines once the secret-token check, the Headers-vs-dict shim, and malformed-JSON handling are honest. The earlier "~10-line" estimate was wrong — secret-token verification is mandatory in any real deployment, not optional.
 
 ## Consequences
 
 **Buys**
 - PoC runs anywhere with outbound HTTPS. No reverse proxy, no TLS cert, no public DNS.
 - Tests exercise update mapping without mocking a poll loop.
-- Webhook is a small additive change when a real consumer needs it.
+- Webhook handler ships in the same file with no new deps.
 
 **Costs**
 - Long-poll is exclusive: one process per bot token. Webhook unblocks horizontal scale; that's a real-consumer concern.

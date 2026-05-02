@@ -28,9 +28,12 @@ export type {
   ChatRequest,
   ChatResponse,
 } from "./channel/http.ts";
-export { processUpdate, runPolling } from "./channel/telegram.ts";
+export { processUpdate, runPolling, createWebhookHandler } from "./channel/telegram.ts";
 export type {
   TelegramUpdate,
   TelegramDeps,
   PollingOpts,
+  WebhookOpts,
+  WebhookRequest,
+  WebhookResponse,
 } from "./channel/telegram.ts";

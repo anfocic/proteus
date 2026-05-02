@@ -27,6 +27,20 @@ export interface PollingOpts extends TelegramDeps {
   pollTimeout?: number;
 }
 
+export interface WebhookOpts extends TelegramDeps {
+  secretToken?: string;
+}
+
+export interface WebhookRequest {
+  headers: Record<string, string | undefined> | { get(name: string): string | null };
+  json(): Promise<unknown>;
+}
+
+export interface WebhookResponse {
+  status: number;
+  body?: string;
+}
+
 function api(deps: TelegramDeps, method: string): string {
   const base = (deps.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   return `${base}/bot${deps.token}/${method}`;
@@ -113,6 +127,34 @@ export async function runPolling(opts: PollingOpts): Promise<void> {
       if (update.update_id >= offset) offset = update.update_id + 1;
     }
   }
+}
+
+function readHeader(headers: WebhookRequest["headers"], name: string): string | undefined {
+  if (typeof (headers as { get?: unknown }).get === "function") {
+    return (headers as { get(n: string): string | null }).get(name) ?? undefined;
+  }
+  const h = headers as Record<string, string | undefined>;
+  return h[name] ?? h[name.toLowerCase()];
+}
+
+export function createWebhookHandler(
+  opts: WebhookOpts,
+): (req: WebhookRequest) => Promise<WebhookResponse> {
+  return async (req) => {
+    if (opts.secretToken) {
+      const got = readHeader(req.headers, "x-telegram-bot-api-secret-token");
+      if (got !== opts.secretToken) return { status: 401 };
+    }
+    let update: TelegramUpdate;
+    try {
+      update = (await req.json()) as TelegramUpdate;
+    } catch (err) {
+      reportError(opts, err);
+      return { status: 400 };
+    }
+    await processUpdate(update, opts);
+    return { status: 200 };
+  };
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

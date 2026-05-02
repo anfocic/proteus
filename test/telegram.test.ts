@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { processUpdate, runPolling } from "../src/channel/telegram.ts";
+import {
+  createWebhookHandler,
+  processUpdate,
+  runPolling,
+} from "../src/channel/telegram.ts";
 import type { TelegramUpdate } from "../src/channel/telegram.ts";
 import type { ChatHandler } from "../src/index.ts";
 
@@ -190,4 +194,101 @@ test("runPolling exits cleanly on abort", async () => {
 
   assert.equal(getUpdatesCount, 1);
   assert.equal(calls.filter((c) => c.url.includes("/getUpdates")).length, 1);
+});
+
+test("webhook: valid update dispatches → 200", async () => {
+  const seen: { sessionId: string; message: string }[] = [];
+  const handler: ChatHandler = async (req) => {
+    seen.push(req);
+    return { reply: "ok", routedTo: "weather" };
+  };
+  const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
+  const wh = createWebhookHandler({ token: "T", handler, fetch });
+
+  const res = await wh({
+    headers: {},
+    json: async () => baseUpdate("hi", 9, 1),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(seen, [{ sessionId: "9", message: "hi" }]);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/sendMessage$/);
+});
+
+test("webhook: missing/invalid secret token → 401, no dispatch", async () => {
+  let called = false;
+  const handler: ChatHandler = async () => {
+    called = true;
+    return { reply: "x", routedTo: "weather" };
+  };
+  const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
+  const wh = createWebhookHandler({
+    token: "T",
+    handler,
+    fetch,
+    secretToken: "shh",
+  });
+
+  const r1 = await wh({ headers: {}, json: async () => baseUpdate("hi") });
+  assert.equal(r1.status, 401);
+
+  const r2 = await wh({
+    headers: { "x-telegram-bot-api-secret-token": "wrong" },
+    json: async () => baseUpdate("hi"),
+  });
+  assert.equal(r2.status, 401);
+
+  assert.equal(called, false);
+  assert.equal(calls.length, 0);
+});
+
+test("webhook: correct secret token passes", async () => {
+  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const { fetch } = recordingFetch(() => okJson({ ok: true }));
+  const wh = createWebhookHandler({
+    token: "T",
+    handler,
+    fetch,
+    secretToken: "shh",
+  });
+  const res = await wh({
+    headers: { "x-telegram-bot-api-secret-token": "shh" },
+    json: async () => baseUpdate("hi"),
+  });
+  assert.equal(res.status, 200);
+});
+
+test("webhook: malformed JSON → 400, onError called", async () => {
+  const errs: unknown[] = [];
+  const handler: ChatHandler = async () => ({ reply: "x", routedTo: "weather" });
+  const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
+  const wh = createWebhookHandler({
+    token: "T",
+    handler,
+    fetch,
+    onError: (e) => errs.push(e),
+  });
+  const res = await wh({
+    headers: {},
+    json: async () => {
+      throw new SyntaxError("bad json");
+    },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(errs.length, 1);
+  assert.equal(calls.length, 0);
+});
+
+test("webhook: Headers object (Web Fetch API) is accepted", async () => {
+  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const { fetch } = recordingFetch(() => okJson({ ok: true }));
+  const wh = createWebhookHandler({
+    token: "T",
+    handler,
+    fetch,
+    secretToken: "shh",
+  });
+  const headers = new Headers({ "x-telegram-bot-api-secret-token": "shh" });
+  const res = await wh({ headers, json: async () => baseUpdate("hi") });
+  assert.equal(res.status, 200);
 });
