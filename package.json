@@ -8,6 +8,7 @@
     "demo": "node --env-file-if-exists=.env --import tsx demo/weather.ts",
     "demo:multi": "node --env-file-if-exists=.env --import tsx demo/multi-tool.ts",
     "demo:triage": "node --env-file-if-exists=.env --import tsx demo/triage.ts",
+    "demo:chat": "node --env-file-if-exists=.env --import tsx demo/chat.ts",
     "test": "node --import tsx --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },

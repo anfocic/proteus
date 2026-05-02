@@ -62,6 +62,15 @@ Hard rule unchanged: nothing in `src/agent/` may import an adapter file. Only `s
 
 History caveat: `OrchestrateOpts.history` should contain only `user` and plain-text `assistant` messages. Tool transcripts from a prior specialist are unsafe to re-feed because tool ids won't match the next specialist's schema.
 
+### Channel layer
+
+`src/channel/` is the first non-LLM abstraction. Two pieces:
+
+- `SessionStore` (`store.ts`) — `{ get, append }` interface keyed by `sessionId`. `inMemoryStore()` ships as the default, with per-session serialization to keep concurrent appends ordered. Real backends (Postgres/Redis) implement the same two methods.
+- `createChatHandler` (`http.ts`) — pure function-shaped handler `({ sessionId, message }) => { reply, routedTo }`. No HTTP framework dep; consumers wrap it. Persists only the user/assistant text pair, never tool transcripts (per ADR 0002).
+
+ADRs in `docs/adr/` track load-bearing channel-layer decisions. New decisions go there as numbered files; style choices stay in this file.
+
 ## What does *not* belong here yet
 
 The PoC is deliberately minimal. None of the following exist or should be added without a concrete reason driven by a real consumer:

@@ -19,3 +19,12 @@ export { classifyIntent } from "./agent/router.ts";
 export type { Intent, ClassifyOpts, Classification } from "./agent/router.ts";
 export { orchestrate } from "./agent/orchestrate.ts";
 export type { OrchestrateOpts, OrchestrateResult } from "./agent/orchestrate.ts";
+export { inMemoryStore } from "./channel/store.ts";
+export type { SessionStore } from "./channel/store.ts";
+export { createChatHandler } from "./channel/http.ts";
+export type {
+  ChatHandler,
+  ChatHandlerConfig,
+  ChatRequest,
+  ChatResponse,
+} from "./channel/http.ts";
