@@ -2,7 +2,12 @@ import type { LLMProvider } from "../llm/provider.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
 import { addUsage, type AgentEvent, type ConfirmCallback, type RunAgentResult } from "./run.ts";
-import { runSpecialist, streamSpecialist, type Specialist } from "./specialist.ts";
+import {
+  resumeSpecialist,
+  runSpecialist,
+  streamSpecialist,
+  type Specialist,
+} from "./specialist.ts";
 
 export interface OrchestrateOpts<TServices> {
   llm: LLMProvider;
@@ -27,6 +32,42 @@ export interface OrchestrateResult extends RunAgentResult {
   routerRaw: string;
   routerUsage: Usage;
   specialistUsage: Usage;
+}
+
+export interface ResumeOrchestrateOpts<TServices> {
+  llm: LLMProvider;
+  specialistModel: string;
+  specialists: Specialist<TServices>[];
+  services: TServices;
+  routedTo: string;
+  suspended: import("./run.ts").SuspensionPayload;
+  resume: import("./run.ts").ResumeDecision;
+  confirm?: ConfirmCallback;
+}
+
+export async function resumeOrchestrate<TServices>(
+  opts: ResumeOrchestrateOpts<TServices>,
+): Promise<OrchestrateResult> {
+  const chosen = opts.specialists.find((s) => s.name === opts.routedTo);
+  if (!chosen) {
+    throw new Error(`resumeOrchestrate: unknown specialist ${opts.routedTo}`);
+  }
+  const result = await resumeSpecialist({
+    llm: opts.llm,
+    specialist: chosen,
+    defaultModel: opts.specialistModel,
+    services: opts.services,
+    suspended: opts.suspended,
+    resume: opts.resume,
+    confirm: opts.confirm,
+  });
+  return {
+    ...result,
+    routedTo: chosen.name,
+    routerRaw: "",
+    routerUsage: { inputTokens: 0, outputTokens: 0 },
+    specialistUsage: result.usage,
+  };
 }
 
 export type OrchestrateStreamEvent =

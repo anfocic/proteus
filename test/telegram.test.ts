@@ -43,10 +43,10 @@ const baseUpdate = (text: string, chatId = 42, updateId = 1): TelegramUpdate => 
 });
 
 test("processUpdate dispatches text → handler + sendMessage", async () => {
-  const seen: { sessionId: string; message: string }[] = [];
+  const seen: { sessionId: string; message?: string }[] = [];
   const handler: ChatHandler = async (req) => {
     seen.push(req);
-    return { reply: "hi back", routedTo: "weather" };
+    return { kind: "reply" as const, reply: "hi back", routedTo: "weather" };
   };
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
   await processUpdate(baseUpdate("hi"), {
@@ -65,7 +65,7 @@ test("processUpdate skips non-text updates", async () => {
   let handlerCalled = false;
   const handler: ChatHandler = async () => {
     handlerCalled = true;
-    return { reply: "x", routedTo: "weather" };
+    return { kind: "reply" as const, reply: "x", routedTo: "weather" };
   };
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
 
@@ -80,7 +80,7 @@ test("processUpdate skips non-text updates", async () => {
 
 test("processUpdate truncates long replies", async () => {
   const long = "a".repeat(5000);
-  const handler: ChatHandler = async () => ({ reply: long, routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: long, routedTo: "weather" });
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
   await processUpdate(baseUpdate("hi"), { token: "T", handler, fetch });
   const body = JSON.parse(calls[0].init?.body as string);
@@ -107,7 +107,7 @@ test("processUpdate: handler throw → onError, no rethrow", async () => {
 
 test("processUpdate: sendMessage failure → onError, no rethrow", async () => {
   const errs: unknown[] = [];
-  const handler: ChatHandler = async () => ({ reply: "x", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "x", routedTo: "weather" });
   const { fetch } = recordingFetch(
     () => new Response("nope", { status: 500 }),
   );
@@ -125,7 +125,7 @@ test("processUpdate: sessionId derives from chat.id", async () => {
   const seen: string[] = [];
   const handler: ChatHandler = async (req) => {
     seen.push(req.sessionId);
-    return { reply: "ok", routedTo: "weather" };
+    return { kind: "reply" as const, reply: "ok", routedTo: "weather" };
   };
   const { fetch } = recordingFetch(() => okJson({ ok: true }));
   await processUpdate(baseUpdate("a", 100, 1), { token: "T", handler, fetch });
@@ -135,7 +135,7 @@ test("processUpdate: sessionId derives from chat.id", async () => {
 
 test("runPolling advances offset past largest update_id", async () => {
   const ctrl = new AbortController();
-  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "ok", routedTo: "weather" });
   let getUpdatesCount = 0;
   const seenOffsets: string[] = [];
   const { fetch } = recordingFetch((url) => {
@@ -170,7 +170,7 @@ test("runPolling advances offset past largest update_id", async () => {
 
 test("runPolling exits cleanly on abort", async () => {
   const ctrl = new AbortController();
-  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "ok", routedTo: "weather" });
   let getUpdatesCount = 0;
   const { fetch, calls } = recordingFetch((url) => {
     if (url.includes("/getUpdates")) {
@@ -197,10 +197,10 @@ test("runPolling exits cleanly on abort", async () => {
 });
 
 test("webhook: valid update dispatches → 200", async () => {
-  const seen: { sessionId: string; message: string }[] = [];
+  const seen: { sessionId: string; message?: string }[] = [];
   const handler: ChatHandler = async (req) => {
     seen.push(req);
-    return { reply: "ok", routedTo: "weather" };
+    return { kind: "reply" as const, reply: "ok", routedTo: "weather" };
   };
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
   const wh = createWebhookHandler({ token: "T", handler, fetch });
@@ -219,7 +219,7 @@ test("webhook: missing/invalid secret token → 401, no dispatch", async () => {
   let called = false;
   const handler: ChatHandler = async () => {
     called = true;
-    return { reply: "x", routedTo: "weather" };
+    return { kind: "reply" as const, reply: "x", routedTo: "weather" };
   };
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
   const wh = createWebhookHandler({
@@ -243,7 +243,7 @@ test("webhook: missing/invalid secret token → 401, no dispatch", async () => {
 });
 
 test("webhook: correct secret token passes", async () => {
-  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "ok", routedTo: "weather" });
   const { fetch } = recordingFetch(() => okJson({ ok: true }));
   const wh = createWebhookHandler({
     token: "T",
@@ -260,7 +260,7 @@ test("webhook: correct secret token passes", async () => {
 
 test("webhook: malformed JSON → 400, onError called", async () => {
   const errs: unknown[] = [];
-  const handler: ChatHandler = async () => ({ reply: "x", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "x", routedTo: "weather" });
   const { fetch, calls } = recordingFetch(() => okJson({ ok: true }));
   const wh = createWebhookHandler({
     token: "T",
@@ -280,7 +280,7 @@ test("webhook: malformed JSON → 400, onError called", async () => {
 });
 
 test("webhook: Headers object (Web Fetch API) is accepted", async () => {
-  const handler: ChatHandler = async () => ({ reply: "ok", routedTo: "weather" });
+  const handler: ChatHandler = async () => ({ kind: "reply" as const, reply: "ok", routedTo: "weather" });
   const { fetch } = recordingFetch(() => okJson({ ok: true }));
   const wh = createWebhookHandler({
     token: "T",

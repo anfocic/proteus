@@ -108,7 +108,11 @@ for await (const line of rl) {
   if (line.trim().length > 0) {
     try {
       const out = await handler({ sessionId, message: line });
-      console.log(`[${out.routedTo}] ${out.reply}\n`);
+      if (out.kind === "reply") {
+        console.log(`[${out.routedTo}] ${out.reply}\n`);
+      } else {
+        console.log(`[${out.routedTo}] (pending: ${out.summary})\n`);
+      }
     } catch (err) {
       console.error(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     }

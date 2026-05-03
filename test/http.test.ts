@@ -36,6 +36,8 @@ test("handler routes and returns reply", async () => {
   });
   const out = await handler({ sessionId: "s1", message: "weather?" });
   assert.equal(out.routedTo, "weather");
+  assert.equal(out.kind, "reply");
+  if (out.kind !== "reply") return;
   assert.equal(out.reply, "sunny");
 });
 
@@ -83,6 +85,9 @@ test("sessions are isolated", async () => {
   });
   const a = await handler({ sessionId: "alice", message: "hi from alice" });
   const b = await handler({ sessionId: "bob", message: "hi from bob" });
+  assert.equal(a.kind, "reply");
+  assert.equal(b.kind, "reply");
+  if (a.kind !== "reply" || b.kind !== "reply") return;
   assert.equal(a.reply, "A1");
   assert.equal(b.reply, "B1");
 
