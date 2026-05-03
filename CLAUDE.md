@@ -38,6 +38,8 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 `anthropic.ts` and `openai-compat.ts` exist together specifically because they cover the two structurally different LLM API shapes in the ecosystem. Every other major provider (Gemini, Mistral, Cohere, every OSS-model host) is a variant of one of these two. **If you add a third adapter, it should be because it's a third structurally distinct shape** — not just because you want a different vendor.
 
+**Errors.** Both adapters throw typed errors from `src/llm/errors.ts`: `LLMAuthError` (401/403), `LLMRateLimitError` (429, with `retryAfter` when the response has a numeric `Retry-After` header), `LLMBadRequestError` (400/422), `LLMServerError` (5xx), `LLMTransportError` (fetch rejection / mid-stream disconnect — `cause` chained to the underlying error), `LLMStreamError` (200 OK but missing body or unrecoverable SSE shape). All extend `LLMError` and carry `provider`, `status?`, `body?`, `parsed?`, `phase: "request" | "stream"`, plus a `code` discriminator for switch-style consumers. **`AbortError` is never wrapped** — it surfaces as a `DOMException` so callers can distinguish cancellation from failure (`isAbortError(err)` is the helper). Auto-retry is out of scope inside adapters; layer it above. ADR 0006.
+
 ### The tool loop
 
 `src/agent/run.ts` exposes `runAgent({ llm, model, system, tools, messages })`. The loop:
@@ -97,7 +99,7 @@ The PoC is deliberately minimal. None of the following exist or should be added 
 - Usage / cost tracking
 - Telegram message-edit streaming (HTTP SSE landed in ADR 0005; Telegram has its own rate-limit problem and stays deferred)
 - HTTP suspend/resume for confirm gate (in-process callback only today)
-- Error taxonomy (`LLMError` class — adapters currently throw raw `Error`)
+- Auto-retry / backoff layer on top of the typed error hierarchy
 - Additional adapters beyond the two protocol shapes
 - Multi-specialist chain/parallel orchestration modes
 - Evaluator (response quality gate)

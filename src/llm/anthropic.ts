@@ -9,6 +9,12 @@ import type {
   Usage,
 } from "./types.ts";
 import { parseSSE, type SSERecord } from "./sse.ts";
+import {
+  errorFromResponse,
+  isAbortError,
+  LLMStreamError,
+  LLMTransportError,
+} from "./errors.ts";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -68,7 +74,7 @@ export function anthropic(opts: {
 
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Anthropic ${res.status}: ${text}`);
+        throw errorFromResponse("anthropic", res, text, "request");
       }
 
       const data = (await res.json()) as AnthropicResponse;
@@ -124,21 +130,40 @@ export function anthropic(opts: {
         });
       } catch (e) {
         signal?.removeEventListener("abort", onAbort);
-        throw e;
+        if (isAbortError(e)) throw e;
+        throw new LLMTransportError({
+          provider: "anthropic",
+          message: "Anthropic stream: transport failure during request",
+          phase: "stream",
+          cause: e,
+        });
       }
 
       if (!res.ok) {
         const text = await res.text();
         signal?.removeEventListener("abort", onAbort);
-        throw new Error(`Anthropic ${res.status}: ${text}`);
+        throw errorFromResponse("anthropic", res, text, "stream");
       }
       if (!res.body) {
         signal?.removeEventListener("abort", onAbort);
-        throw new Error("Anthropic stream: response has no body");
+        throw new LLMStreamError({
+          provider: "anthropic",
+          message: "Anthropic stream: response has no body",
+          phase: "stream",
+        });
       }
 
       try {
         yield* streamFromAnthropicSSE(parseSSE(res.body, ctrl.signal));
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+        if (e instanceof LLMTransportError || e instanceof LLMStreamError) throw e;
+        throw new LLMTransportError({
+          provider: "anthropic",
+          message: "Anthropic stream: transport failure mid-stream",
+          phase: "stream",
+          cause: e,
+        });
       } finally {
         ctrl.abort();
         signal?.removeEventListener("abort", onAbort);

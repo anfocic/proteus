@@ -9,6 +9,12 @@ import type {
   Usage,
 } from "./types.ts";
 import { parseSSE, type SSERecord } from "./sse.ts";
+import {
+  errorFromResponse,
+  isAbortError,
+  LLMStreamError,
+  LLMTransportError,
+} from "./errors.ts";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
@@ -98,7 +104,7 @@ export function openaiCompat(opts: {
 
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`OpenAI ${res.status}: ${text}`);
+        throw errorFromResponse("openai-compat", res, text, "request");
       }
 
       const data = (await res.json()) as ChatResponse;
@@ -182,21 +188,40 @@ export function openaiCompat(opts: {
         });
       } catch (e) {
         signal?.removeEventListener("abort", onAbort);
-        throw e;
+        if (isAbortError(e)) throw e;
+        throw new LLMTransportError({
+          provider: "openai-compat",
+          message: "OpenAI stream: transport failure during request",
+          phase: "stream",
+          cause: e,
+        });
       }
 
       if (!res.ok) {
         const text = await res.text();
         signal?.removeEventListener("abort", onAbort);
-        throw new Error(`OpenAI ${res.status}: ${text}`);
+        throw errorFromResponse("openai-compat", res, text, "stream");
       }
       if (!res.body) {
         signal?.removeEventListener("abort", onAbort);
-        throw new Error("OpenAI stream: response has no body");
+        throw new LLMStreamError({
+          provider: "openai-compat",
+          message: "OpenAI stream: response has no body",
+          phase: "stream",
+        });
       }
 
       try {
         yield* streamFromOpenAISSE(parseSSE(res.body, ctrl.signal));
+      } catch (e) {
+        if (isAbortError(e)) throw e;
+        if (e instanceof LLMTransportError || e instanceof LLMStreamError) throw e;
+        throw new LLMTransportError({
+          provider: "openai-compat",
+          message: "OpenAI stream: transport failure mid-stream",
+          phase: "stream",
+          cause: e,
+        });
       } finally {
         ctrl.abort();
         signal?.removeEventListener("abort", onAbort);
