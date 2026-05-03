@@ -1,6 +1,6 @@
 # NEXT — Roadmap
 
-What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate and typed `LLMError` hierarchy in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
+What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, and the `withRetry` wrapper in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
 
 Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intrebit consumes proteus as a dep", tier 4 if the goal is "OSS portfolio that gets stars".
 
@@ -8,7 +8,6 @@ Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intre
 
 | Item | Sketch | Notes |
 |---|---|---|
-| **Auto-retry / backoff layer** | `withRetry(llm, { maxAttempts, baseMs, ...})` wrapper around `LLMProvider`. Reads `LLMRateLimitError.retryAfter`, exponential-backoff on `LLMServerError` and `LLMTransportError`, never on `LLMAuthError`/`LLMBadRequestError`. | Typed errors (ADR 0006) enable this; nothing currently uses them. ~80 lines + tests. |
 | **Usage / cost tracking on results** | Surface `usage: Usage` (already in adapter responses) on `RunAgentResult`, `OrchestrateResult`. Optional `cost?` if rates are configured per model. Aggregate across iterations. | `Usage` already flows through adapters; we drop it in `runAgent`. |
 | **Cache breakpoint hints (Anthropic prompt caching)** | `cacheBreakpoint?: boolean` on system prompt and tool defs. Adapter emits `cache_control: { type: "ephemeral" }`. OpenAI-compat ignores. | ~75% cost saving on repeat-system flows. CRM agents have huge static system prompts — this matters. |
 | **HTTP suspend/resume for confirm gate** | Persist pending tool state in `SessionStore`; resume agent loop on next request. Today's callback-only confirm makes HTTP single-shot incompatible with destructive tools. | Likely needs a `{ kind: "pending" }` dispatch return shape (intrebit-style) plus a session-keyed pending queue. ADR worthy. |

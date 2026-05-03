@@ -40,6 +40,8 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 **Errors.** Both adapters throw typed errors from `src/llm/errors.ts`: `LLMAuthError` (401/403), `LLMRateLimitError` (429, with `retryAfter` when the response has a numeric `Retry-After` header), `LLMBadRequestError` (400/422), `LLMServerError` (5xx), `LLMTransportError` (fetch rejection / mid-stream disconnect — `cause` chained to the underlying error), `LLMStreamError` (200 OK but missing body or unrecoverable SSE shape). All extend `LLMError` and carry `provider`, `status?`, `body?`, `parsed?`, `phase: "request" | "stream"`, plus a `code` discriminator for switch-style consumers. **`AbortError` is never wrapped** — it surfaces as a `DOMException` so callers can distinguish cancellation from failure (`isAbortError(err)` is the helper). Auto-retry is out of scope inside adapters; layer it above. ADR 0006.
 
+**Retry.** `withRetry(llm, opts)` in `src/llm/retry.ts` returns a wrapped `LLMProvider` that retries `LLMRateLimitError` (honouring `retryAfter`), `LLMServerError`, and `LLMTransportError` with full-jitter exponential backoff. Auth, bad-request, stream-shape, and abort errors never retry. Streaming retry is bounded to the *pre-yield* window — once any `StreamEvent` has reached the consumer, mid-stream failures surface unchanged to avoid duplicate output. Defaults: `maxAttempts: 3`, `baseMs: 500`, `maxMs: 30_000`, `jitter: true`. Composable with everything that takes a provider — `runAgent`, `runSpecialist`, `orchestrate`, channel handlers — none of them know it exists. ADR 0007.
+
 ### The tool loop
 
 `src/agent/run.ts` exposes `runAgent({ llm, model, system, tools, messages })`. The loop:
