@@ -4,6 +4,7 @@ import {
   runAgent,
   streamAgent,
   type AgentEvent,
+  type ConfirmCallback,
   type RunAgentResult,
   type ToolDef,
 } from "./run.ts";
@@ -28,6 +29,7 @@ export interface RunSpecialistOpts<TServices> {
   defaultModel: string;
   messages: Message[];
   services: TServices;
+  confirm?: ConfirmCallback;
   maxIterations?: number;
   maxTokens?: number;
   temperature?: number;
@@ -43,6 +45,7 @@ export async function runSpecialist<TServices>(
     tools: opts.specialist.tools,
     messages: opts.messages,
     services: opts.services,
+    confirm: opts.confirm,
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
@@ -59,6 +62,7 @@ export async function* streamSpecialist<TServices>(
     tools: opts.specialist.tools,
     messages: opts.messages,
     services: opts.services,
+    confirm: opts.confirm,
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
