@@ -39,3 +39,4 @@ Numbering is sequential, zero-padded to 4 digits. Never renumber.
 | [0003](./0003-telegram-long-poll.md) | Telegram long-poll first | Accepted |
 | [0004](./0004-streaming.md) | Streaming: provider + runAgent only | Accepted |
 | [0005](./0005-channel-streaming.md) | Channel-layer streaming: HTTP SSE handler | Accepted |
+| [0006](./0006-error-taxonomy.md) | Typed `LLMError` hierarchy from adapters | Accepted |

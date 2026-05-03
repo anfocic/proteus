@@ -11,6 +11,16 @@ export type {
 } from "./llm/types.ts";
 export { anthropic } from "./llm/anthropic.ts";
 export { openaiCompat } from "./llm/openai-compat.ts";
+export {
+  LLMError,
+  LLMAuthError,
+  LLMRateLimitError,
+  LLMBadRequestError,
+  LLMServerError,
+  LLMTransportError,
+  LLMStreamError,
+} from "./llm/errors.ts";
+export type { LLMErrorCode, ParsedErrorBody, LLMErrorInit } from "./llm/errors.ts";
 export { runAgent, streamAgent } from "./agent/run.ts";
 export type {
   AgentEvent,
