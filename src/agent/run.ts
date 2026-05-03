@@ -42,6 +42,16 @@ export interface RunAgentResult {
   finalText: string;
   iterations: number;
   stopReason: "end_turn" | "max_iterations" | "max_tokens" | "error";
+  usage: Usage;
+}
+
+export const zeroUsage = (): Usage => ({ inputTokens: 0, outputTokens: 0 });
+
+export function addUsage(a: Usage, b: Usage): Usage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+  };
 }
 
 type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown };
@@ -142,6 +152,7 @@ export async function runAgent<TServices = Record<string, unknown>>(
 
   const messages: Message[] = [...input.messages];
   let iterations = 0;
+  let usage = zeroUsage();
 
   while (iterations < maxIterations) {
     iterations++;
@@ -155,6 +166,7 @@ export async function runAgent<TServices = Record<string, unknown>>(
       temperature: input.temperature,
     });
 
+    usage = addUsage(usage, res.usage);
     messages.push({ role: "assistant", content: res.content });
 
     if (res.stopReason !== "tool_use") {
@@ -163,6 +175,7 @@ export async function runAgent<TServices = Record<string, unknown>>(
         finalText: extractText(res.content),
         iterations,
         stopReason: res.stopReason,
+        usage,
       };
     }
 
@@ -174,6 +187,7 @@ export async function runAgent<TServices = Record<string, unknown>>(
         finalText: extractText(res.content),
         iterations,
         stopReason: "end_turn",
+        usage,
       };
     }
 
@@ -202,7 +216,7 @@ export async function runAgent<TServices = Record<string, unknown>>(
   const last = messages[messages.length - 1];
   const finalText =
     last && last.role === "assistant" ? extractText(last.content as ContentBlock[]) : "";
-  return { messages, finalText, iterations, stopReason: "max_iterations" };
+  return { messages, finalText, iterations, stopReason: "max_iterations", usage };
 }
 
 export type AgentEvent =
@@ -231,13 +245,14 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
 
   const messages: Message[] = [...input.messages];
   let iterations = 0;
+  let usage = zeroUsage();
 
   while (iterations < maxIterations) {
     iterations++;
 
     let turnContent: ContentBlock[] = [];
     let turnStop: StopReason = "error";
-    let turnUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+    let turnUsage: Usage = zeroUsage();
 
     for await (const ev of input.llm.stream(
       {
@@ -257,8 +272,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         turnUsage = ev.usage;
       }
     }
-    void turnUsage;
-
+    usage = addUsage(usage, turnUsage);
     messages.push({ role: "assistant", content: turnContent });
 
     if (turnStop !== "tool_use") {
@@ -267,6 +281,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         finalText: extractText(turnContent),
         iterations,
         stopReason: turnStop,
+        usage,
       };
       yield { type: "agent_done", result };
       return result;
@@ -280,6 +295,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         finalText: extractText(turnContent),
         iterations,
         stopReason: "end_turn",
+        usage,
       };
       yield { type: "agent_done", result };
       return result;
@@ -342,6 +358,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
     finalText,
     iterations,
     stopReason: "max_iterations",
+    usage,
   };
   yield { type: "agent_done", result };
   return result;
