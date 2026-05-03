@@ -21,6 +21,8 @@ export {
   LLMStreamError,
 } from "./llm/errors.ts";
 export type { LLMErrorCode, ParsedErrorBody, LLMErrorInit } from "./llm/errors.ts";
+export { withRetry } from "./llm/retry.ts";
+export type { RetryOpts } from "./llm/retry.ts";
 export { runAgent, streamAgent } from "./agent/run.ts";
 export type {
   AgentEvent,
