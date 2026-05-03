@@ -82,14 +82,23 @@ Concurrency: confirms within a single turn are serialized in tool-block order (o
 
 Streaming: `streamAgent` emits `tool_confirm_request` (with `summary`) and `tool_confirm_response` (with `confirmed: boolean`) around each gate. Observation-only — gating uses the callback. No `tool_dispatch_start` is yielded for declined tools.
 
-Scope: in-process callback only — works for CLI (`demo/confirm.ts`) and Telegram long-poll (`demo/telegram-confirm.ts`, in-memory `Map<toolUseId, resolve>` + inline buttons). Does *not* work for HTTP single-shot request/response; making the HTTP channel confirm-capable requires persisting pending tool state and resuming the loop on a subsequent request — separate Phase 3 item. Durable pending-action queues / cross-process resume are explicitly not provided.
+Scope: in-process callback works for CLI (`demo/confirm.ts`) and Telegram long-poll (`demo/telegram-confirm.ts`, in-memory `Map<toolUseId, resolve>` + inline buttons). For HTTP single-shot request/response, see "HTTP suspend/resume" below — `confirm` returning the new `"pending"` literal is the bridge. Streaming (`streamAgent`, SSE chat handler) does **not** support `"pending"` — a `"pending"` decision there throws. Durable pending-action queues / cross-process resume scaffolding beyond the simple `PendingStore` shape are explicitly not provided.
+
+### HTTP suspend/resume
+
+`ConfirmCallback` may return `"pending"` in addition to `boolean`. When it does, `runAgent` exits early with `stopReason: "pending"` and a `suspended: SuspensionPayload` capturing the pre-turn messages, the assistant turn's `turnContent`, the per-tool `decided` map, and the iteration count. `resumeAgent({ suspended, resume: { toolUseId, decision } })` rebuilds the loop state, applies the decision, dispatches the rest of the turn, and re-enters the main loop where it left off (may itself suspend again on the next confirm-required tool — supported, one roundtrip per gate).
+
+`resumeSpecialist` and `resumeOrchestrate` mirror their fresh counterparts but skip the router — the chosen specialist is locked in the persisted record. Re-routing on resume would be wrong; the user is responding to a specific offer.
+
+Channel: `createChatHandler` config gains `pendingStore?: PendingStore` (sibling of `SessionStore`, separate lifecycle). When set, the effective `confirm` always returns `"pending"`, suspensions are persisted to `pendingStore`, and `ChatResponse` becomes `{ kind: "reply", ... } | { kind: "pending", toolUseId, name, summary, routedTo }`. `ChatRequest.confirm?: { decision }` resolves a stored pending; with no decision the same pending re-surfaces (no LLM call). Persistence rule from ADR 0002 unchanged: `SessionStore` only sees the user/assistant text pair. The streaming chat handler does not support suspend/resume in v1. ADR 0008.
 
 ### Channel layer
 
 `src/channel/` is the first non-LLM abstraction. Two pieces:
 
 - `SessionStore` (`store.ts`) — `{ get, append }` interface keyed by `sessionId`. `inMemoryStore()` ships as the default, with per-session serialization to keep concurrent appends ordered. Real backends (Postgres/Redis) implement the same two methods.
-- `createChatHandler` (`http.ts`) — pure function-shaped handler `({ sessionId, message }) => { reply, routedTo }`. No HTTP framework dep; consumers wrap it. Persists only the user/assistant text pair, never tool transcripts (per ADR 0002).
+- `createChatHandler` (`http.ts`) — pure function-shaped handler `(req) => Promise<ChatReply | ChatPending>`. No HTTP framework dep; consumers wrap it. Persists only the user/assistant text pair, never tool transcripts (per ADR 0002). Suspend/resume opt-in via `pendingStore` config; without it the handler returns `{ kind: "reply" }` always.
+- `inMemoryPendingStore()` (`pending.ts`) — `{ get, set, clear }` interface for the suspended-confirm record. One pending per session.
 - `createStreamingChatHandler` (`http.ts`) — streaming sibling. Returns `(req, { signal? }) => AsyncGenerator<ChatStreamEvent>` yielding `routed`, `text_delta`, and a terminal `done`. Internal `AgentEvent`s (tool_dispatch, reasoning, message_start/stop) are intentionally not forwarded — drop down to `streamOrchestrate` if you need them. Persistence rule unchanged from the buffered handler. ADR 0005 records the design.
 - `telegram.ts` — `processUpdate(update, deps)` for pure update mapping plus two transports: `runPolling(opts)` (long-poll, default for PoC/local) and `createWebhookHandler(opts)` (returns `(req) => { status, body? }`, validates `X-Telegram-Bot-Api-Secret-Token` when configured). Accepts either Web `Headers` or a plain header dict. ADR 0003 records the long-poll-first decision.
 

@@ -22,7 +22,9 @@ export interface ConfirmRequest {
   summary: string;
 }
 
-export type ConfirmCallback = (req: ConfirmRequest) => Promise<boolean>;
+export type ConfirmDecision = boolean | "pending";
+
+export type ConfirmCallback = (req: ConfirmRequest) => Promise<ConfirmDecision>;
 
 export interface RunAgentInput<TServices = Record<string, unknown>> {
   llm: LLMProvider;
@@ -37,12 +39,47 @@ export interface RunAgentInput<TServices = Record<string, unknown>> {
   temperature?: number;
 }
 
+export type RunAgentStopReason =
+  | "end_turn"
+  | "max_iterations"
+  | "max_tokens"
+  | "error"
+  | "pending";
+
+export interface PendingTool {
+  toolUseId: string;
+  name: string;
+  input: unknown;
+  summary: string;
+}
+
+export interface SuspensionPayload {
+  pending: PendingTool;
+  /**
+   * Conversation messages BEFORE the assistant turn that triggered the gate.
+   * On resume, the assistant turn is re-attached from `turnContent`, and any
+   * already-resolved tool_results in `decided` are emitted in original order
+   * once the turn finishes dispatching.
+   */
+  messages: Message[];
+  turnContent: ContentBlock[];
+  /**
+   * Map of toolUseId → resolved result. Captures decisions made before the
+   * pending one (typically non-confirm tools that ran inline, or earlier
+   * confirms that resolved).
+   */
+  decided: Record<string, ToolResultRecord>;
+  iteration: number;
+  usage: Usage;
+}
+
 export interface RunAgentResult {
   messages: Message[];
   finalText: string;
   iterations: number;
-  stopReason: "end_turn" | "max_iterations" | "max_tokens" | "error";
+  stopReason: RunAgentStopReason;
   usage: Usage;
+  suspended?: SuspensionPayload;
 }
 
 export const zeroUsage = (): Usage => ({ inputTokens: 0, outputTokens: 0 });
@@ -54,8 +91,13 @@ export function addUsage(a: Usage, b: Usage): Usage {
   };
 }
 
+export interface ResumeDecision {
+  toolUseId: string;
+  decision: "approve" | "decline";
+}
+
 type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown };
-type ToolResultRecord = { toolUseId: string; content: string; isError: boolean };
+export type ToolResultRecord = { toolUseId: string; content: string; isError: boolean };
 type ToolMap = Map<string, ToolDef<unknown, unknown>>;
 
 function summarizeInput(tool: ToolDef<unknown, unknown> | undefined, input: unknown): string {
@@ -73,44 +115,12 @@ function summarizeInput(tool: ToolDef<unknown, unknown> | undefined, input: unkn
   }
 }
 
-async function gateTool(
-  tu: ToolUseBlock,
-  tools: ToolMap,
-  confirm: ConfirmCallback | undefined,
-): Promise<{ approved: true; summary: string } | { approved: false; result: ToolResultRecord }> {
-  const tool = tools.get(tu.name);
-  if (!tool) {
-    return {
-      approved: false,
-      result: { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true },
-    };
-  }
-  if (!tool.requiresConfirmation) {
-    return { approved: true, summary: "" };
-  }
-  const summary = summarizeInput(tool, tu.input);
-  if (!confirm) {
-    return {
-      approved: false,
-      result: {
-        toolUseId: tu.id,
-        content: "Tool requires confirmation but no confirm handler was provided",
-        isError: true,
-      },
-    };
-  }
-  const ok = await confirm({ toolUseId: tu.id, name: tu.name, input: tu.input, summary });
-  if (!ok) {
-    return {
-      approved: false,
-      result: {
-        toolUseId: tu.id,
-        content: `[DECLINED] User declined this action: ${summary}`,
-        isError: true,
-      },
-    };
-  }
-  return { approved: true, summary };
+function declinedResult(tu: ToolUseBlock, summary: string): ToolResultRecord {
+  return {
+    toolUseId: tu.id,
+    content: `[DECLINED] User declined this action: ${summary}`,
+    isError: true,
+  };
 }
 
 async function runHandler(
@@ -134,10 +144,90 @@ async function runHandler(
   }
 }
 
-export async function runAgent<TServices = Record<string, unknown>>(
-  input: RunAgentInput<TServices>,
-): Promise<RunAgentResult> {
-  const maxIterations = input.maxIterations ?? 5;
+type TurnDispatchResult =
+  | { kind: "complete"; toolResults: ToolResultRecord[] }
+  | { kind: "pending"; pending: PendingTool; decided: Record<string, ToolResultRecord> };
+
+async function dispatchTurn(
+  toolUses: ToolUseBlock[],
+  tools: ToolMap,
+  ctx: ToolContext<unknown>,
+  confirm: ConfirmCallback | undefined,
+  seed: Record<string, ToolResultRecord> = {},
+): Promise<TurnDispatchResult> {
+  const decided: Record<string, ToolResultRecord> = { ...seed };
+  type GateOutcome =
+    | { kind: "approved"; tu: ToolUseBlock }
+    | { kind: "decided"; result: ToolResultRecord };
+  const outcomes: GateOutcome[] = [];
+
+  for (const tu of toolUses) {
+    if (decided[tu.id]) {
+      outcomes.push({ kind: "decided", result: decided[tu.id] });
+      continue;
+    }
+
+    const tool = tools.get(tu.name);
+    if (!tool) {
+      const result: ToolResultRecord = {
+        toolUseId: tu.id,
+        content: `Unknown tool: ${tu.name}`,
+        isError: true,
+      };
+      decided[tu.id] = result;
+      outcomes.push({ kind: "decided", result });
+      continue;
+    }
+
+    if (!tool.requiresConfirmation) {
+      outcomes.push({ kind: "approved", tu });
+      continue;
+    }
+
+    const summary = summarizeInput(tool, tu.input);
+    if (!confirm) {
+      const result: ToolResultRecord = {
+        toolUseId: tu.id,
+        content: "Tool requires confirmation but no confirm handler was provided",
+        isError: true,
+      };
+      decided[tu.id] = result;
+      outcomes.push({ kind: "decided", result });
+      continue;
+    }
+
+    const decision = await confirm({ toolUseId: tu.id, name: tu.name, input: tu.input, summary });
+    if (decision === "pending") {
+      return {
+        kind: "pending",
+        pending: { toolUseId: tu.id, name: tu.name, input: tu.input, summary },
+        decided,
+      };
+    }
+    if (decision === false) {
+      const result = declinedResult(tu, summary);
+      decided[tu.id] = result;
+      outcomes.push({ kind: "decided", result });
+    } else {
+      outcomes.push({ kind: "approved", tu });
+    }
+  }
+
+  const results = await Promise.all(
+    outcomes.map((o) => (o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx))),
+  );
+  return { kind: "complete", toolResults: results };
+}
+
+interface AgentLoopState<TServices> {
+  input: RunAgentInput<TServices>;
+  tools: ToolMap;
+  toolSchemas: ToolSchema[];
+  ctx: ToolContext<unknown>;
+  maxIterations: number;
+}
+
+function setup<TServices>(input: Omit<RunAgentInput<TServices>, "messages">): AgentLoopState<TServices> {
   const tools: ToolMap = new Map(
     input.tools.map((t) => [t.name, t as ToolDef<unknown, unknown>]),
   );
@@ -146,24 +236,38 @@ export async function runAgent<TServices = Record<string, unknown>>(
     description,
     inputSchema,
   }));
-  const ctx: ToolContext<TServices> = {
-    services: input.services ?? ({} as TServices),
+  const ctx: ToolContext<unknown> = {
+    services: (input.services ?? {}) as unknown,
   };
+  return {
+    input: input as RunAgentInput<TServices>,
+    tools,
+    toolSchemas,
+    ctx,
+    maxIterations: input.maxIterations ?? 5,
+  };
+}
 
-  const messages: Message[] = [...input.messages];
-  let iterations = 0;
-  let usage = zeroUsage();
+async function loop<TServices>(
+  state: AgentLoopState<TServices>,
+  initialMessages: Message[],
+  startIteration: number,
+  startUsage: Usage = zeroUsage(),
+): Promise<RunAgentResult> {
+  const messages: Message[] = [...initialMessages];
+  let iterations = startIteration;
+  let usage = startUsage;
 
-  while (iterations < maxIterations) {
+  while (iterations < state.maxIterations) {
     iterations++;
 
-    const res = await input.llm.complete({
-      model: input.model,
-      system: input.system,
+    const res = await state.input.llm.complete({
+      model: state.input.model,
+      system: state.input.system,
       messages,
-      tools: toolSchemas.length > 0 ? toolSchemas : undefined,
-      maxTokens: input.maxTokens,
-      temperature: input.temperature,
+      tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
+      maxTokens: state.input.maxTokens,
+      temperature: state.input.temperature,
     });
 
     usage = addUsage(usage, res.usage);
@@ -191,19 +295,27 @@ export async function runAgent<TServices = Record<string, unknown>>(
       };
     }
 
-    const gates: Array<{ tu: ToolUseBlock; declined?: ToolResultRecord }> = [];
-    for (const tu of toolUses) {
-      const gate = await gateTool(tu, tools, input.confirm);
-      gates.push(gate.approved ? { tu } : { tu, declined: gate.result });
+    const dispatch = await dispatchTurn(toolUses, state.tools, state.ctx, state.input.confirm);
+    if (dispatch.kind === "pending") {
+      messages.pop();
+      return {
+        messages,
+        finalText: "",
+        iterations,
+        stopReason: "pending",
+        usage,
+        suspended: {
+          pending: dispatch.pending,
+          messages,
+          turnContent: res.content,
+          decided: dispatch.decided,
+          iteration: iterations,
+          usage,
+        },
+      };
     }
 
-    const results = await Promise.all(
-      gates.map((g) =>
-        g.declined ? Promise.resolve(g.declined) : runHandler(g.tu, tools, ctx as ToolContext<unknown>),
-      ),
-    );
-
-    for (const r of results) {
+    for (const r of dispatch.toolResults) {
       messages.push({
         role: "tool_result",
         toolUseId: r.toolUseId,
@@ -219,6 +331,78 @@ export async function runAgent<TServices = Record<string, unknown>>(
   return { messages, finalText, iterations, stopReason: "max_iterations", usage };
 }
 
+export async function runAgent<TServices = Record<string, unknown>>(
+  input: RunAgentInput<TServices>,
+): Promise<RunAgentResult> {
+  return loop(setup(input), input.messages, 0);
+}
+
+export interface ResumeAgentInput<TServices = Record<string, unknown>>
+  extends Omit<RunAgentInput<TServices>, "messages"> {
+  suspended: SuspensionPayload;
+  resume: ResumeDecision;
+}
+
+export async function resumeAgent<TServices = Record<string, unknown>>(
+  input: ResumeAgentInput<TServices>,
+): Promise<RunAgentResult> {
+  const { suspended, resume } = input;
+  if (resume.toolUseId !== suspended.pending.toolUseId) {
+    throw new Error(
+      `resumeAgent: decision toolUseId ${resume.toolUseId} does not match suspended toolUseId ${suspended.pending.toolUseId}`,
+    );
+  }
+  const state = setup(input);
+
+  const toolUses = suspended.turnContent.filter((b): b is ToolUseBlock => b.type === "tool_use");
+  const seed: Record<string, ToolResultRecord> = { ...suspended.decided };
+  if (resume.decision === "decline") {
+    seed[resume.toolUseId] = {
+      toolUseId: resume.toolUseId,
+      content: `[DECLINED] User declined this action: ${suspended.pending.summary}`,
+      isError: true,
+    };
+  } else {
+    const tu = toolUses.find((t) => t.id === resume.toolUseId);
+    if (!tu) {
+      throw new Error(`resumeAgent: pending toolUseId ${resume.toolUseId} not in saved turn`);
+    }
+    seed[tu.id] = await runHandler(tu, state.tools, state.ctx);
+  }
+
+  const dispatch = await dispatchTurn(toolUses, state.tools, state.ctx, input.confirm, seed);
+  const messagesWithTurn = [...suspended.messages, { role: "assistant" as const, content: suspended.turnContent }];
+
+  if (dispatch.kind === "pending") {
+    return {
+      messages: suspended.messages,
+      finalText: "",
+      iterations: suspended.iteration,
+      stopReason: "pending",
+      usage: suspended.usage,
+      suspended: {
+        pending: dispatch.pending,
+        messages: suspended.messages,
+        turnContent: suspended.turnContent,
+        decided: dispatch.decided,
+        iteration: suspended.iteration,
+        usage: suspended.usage,
+      },
+    };
+  }
+
+  for (const r of dispatch.toolResults) {
+    messagesWithTurn.push({
+      role: "tool_result",
+      toolUseId: r.toolUseId,
+      content: r.content,
+      isError: r.isError,
+    });
+  }
+
+  return loop(state, messagesWithTurn, suspended.iteration, suspended.usage);
+}
+
 export type AgentEvent =
   | StreamEvent
   | { type: "tool_confirm_request"; toolUseId: string; name: string; input: unknown; summary: string }
@@ -230,24 +414,12 @@ export type AgentEvent =
 export async function* streamAgent<TServices = Record<string, unknown>>(
   input: RunAgentInput<TServices> & { signal?: AbortSignal },
 ): AsyncGenerator<AgentEvent, RunAgentResult, void> {
-  const maxIterations = input.maxIterations ?? 5;
-  const tools: ToolMap = new Map(
-    input.tools.map((t) => [t.name, t as ToolDef<unknown, unknown>]),
-  );
-  const toolSchemas: ToolSchema[] = input.tools.map(({ name, description, inputSchema }) => ({
-    name,
-    description,
-    inputSchema,
-  }));
-  const ctx: ToolContext<TServices> = {
-    services: input.services ?? ({} as TServices),
-  };
-
+  const state = setup(input);
   const messages: Message[] = [...input.messages];
   let iterations = 0;
   let usage = zeroUsage();
 
-  while (iterations < maxIterations) {
+  while (iterations < state.maxIterations) {
     iterations++;
 
     let turnContent: ContentBlock[] = [];
@@ -259,7 +431,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         model: input.model,
         system: input.system,
         messages,
-        tools: toolSchemas.length > 0 ? toolSchemas : undefined,
+        tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
         maxTokens: input.maxTokens,
         temperature: input.temperature,
       },
@@ -301,36 +473,91 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
       return result;
     }
 
-    const gates: Array<{ tu: ToolUseBlock; declined?: ToolResultRecord }> = [];
+    type GateOutcome =
+      | { kind: "approved"; tu: ToolUseBlock }
+      | { kind: "decided"; result: ToolResultRecord };
+    const outcomes: GateOutcome[] = [];
+    let pendingHit = false;
+
     for (const tu of toolUses) {
-      const tool = tools.get(tu.name);
-      if (tool?.requiresConfirmation) {
-        const summary = summarizeInput(tool, tu.input);
-        yield {
-          type: "tool_confirm_request",
-          toolUseId: tu.id,
-          name: tu.name,
-          input: tu.input,
-          summary,
-        };
-        const gate = await gateTool(tu, tools, input.confirm);
-        yield { type: "tool_confirm_response", toolUseId: tu.id, confirmed: gate.approved };
-        gates.push(gate.approved ? { tu } : { tu, declined: gate.result });
+      const tool = state.tools.get(tu.name);
+      if (!tool) {
+        outcomes.push({
+          kind: "decided",
+          result: { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true },
+        });
+        continue;
+      }
+      if (!tool.requiresConfirmation) {
+        outcomes.push({ kind: "approved", tu });
+        continue;
+      }
+      const summary = summarizeInput(tool, tu.input);
+      yield {
+        type: "tool_confirm_request",
+        toolUseId: tu.id,
+        name: tu.name,
+        input: tu.input,
+        summary,
+      };
+      if (!input.confirm) {
+        outcomes.push({
+          kind: "decided",
+          result: {
+            toolUseId: tu.id,
+            content: "Tool requires confirmation but no confirm handler was provided",
+            isError: true,
+          },
+        });
+        continue;
+      }
+      const decision = await input.confirm({
+        toolUseId: tu.id,
+        name: tu.name,
+        input: tu.input,
+        summary,
+      });
+      if (decision === "pending") {
+        pendingHit = true;
+        break;
+      }
+      yield { type: "tool_confirm_response", toolUseId: tu.id, confirmed: decision === true };
+      if (decision) {
+        outcomes.push({ kind: "approved", tu });
       } else {
-        const gate = await gateTool(tu, tools, input.confirm);
-        gates.push(gate.approved ? { tu } : { tu, declined: gate.result });
+        outcomes.push({ kind: "decided", result: declinedResult(tu, summary) });
       }
     }
 
-    for (const g of gates) {
-      if (!g.declined) {
-        yield { type: "tool_dispatch_start", toolUseId: g.tu.id, name: g.tu.name, input: g.tu.input };
+    if (pendingHit) {
+      messages.pop();
+      const result: RunAgentResult = {
+        messages,
+        finalText: "",
+        iterations,
+        stopReason: "error",
+        usage,
+      };
+      yield { type: "agent_done", result };
+      throw new Error(
+        "streamAgent does not support 'pending' confirm decisions — use runAgent + resumeAgent for suspend/resume",
+      );
+    }
+
+    for (const o of outcomes) {
+      if (o.kind === "approved") {
+        yield {
+          type: "tool_dispatch_start",
+          toolUseId: o.tu.id,
+          name: o.tu.name,
+          input: o.tu.input,
+        };
       }
     }
 
     const results = await Promise.all(
-      gates.map((g) =>
-        g.declined ? Promise.resolve(g.declined) : runHandler(g.tu, tools, ctx as ToolContext<unknown>),
+      outcomes.map((o) =>
+        o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, state.tools, state.ctx),
       ),
     );
 

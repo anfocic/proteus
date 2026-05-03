@@ -41,3 +41,4 @@ Numbering is sequential, zero-padded to 4 digits. Never renumber.
 | [0005](./0005-channel-streaming.md) | Channel-layer streaming: HTTP SSE handler | Accepted |
 | [0006](./0006-error-taxonomy.md) | Typed `LLMError` hierarchy from adapters | Accepted |
 | [0007](./0007-retry-wrapper.md) | Retry wrapper above the provider, not inside adapters | Accepted |
+| [0008](./0008-http-suspend-resume.md) | HTTP suspend/resume for the confirmation gate | Accepted |

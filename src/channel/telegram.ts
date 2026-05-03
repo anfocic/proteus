@@ -72,7 +72,11 @@ export async function processUpdate(
 
   try {
     const result = await deps.handler({ sessionId, message: msg.text });
-    const text = truncate(result.reply);
+    const replyText =
+      result.kind === "reply"
+        ? result.reply
+        : `Action requires confirmation: ${result.summary}`;
+    const text = truncate(replyText);
 
     const res = await fetchImpl(api(deps, "sendMessage"), {
       method: "POST",
