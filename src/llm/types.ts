@@ -39,3 +39,11 @@ export interface ToolSchema {
   description: string;
   inputSchema: unknown;
 }
+
+export type StreamEvent =
+  | { type: "message_start"; id?: string }
+  | { type: "message_stop"; stopReason: StopReason; usage: Usage; content: ContentBlock[] }
+  | { type: "text_delta"; index: number; text: string }
+  | { type: "reasoning_delta"; index: number; text: string }
+  | { type: "tool_use_start"; index: number; id: string; name: string }
+  | { type: "tool_use_stop"; index: number; input: unknown };

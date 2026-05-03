@@ -10,6 +10,8 @@
     "demo:triage": "node --env-file-if-exists=.env --import tsx demo/triage.ts",
     "demo:chat": "node --env-file-if-exists=.env --import tsx demo/chat.ts",
     "demo:telegram": "node --env-file-if-exists=.env --import tsx demo/telegram.ts",
+    "demo:stream": "node --env-file-if-exists=.env --import tsx demo/stream.ts",
+    "demo:chat-stream": "node --env-file-if-exists=.env --import tsx demo/chat-stream.ts",
     "test": "node --import tsx --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },

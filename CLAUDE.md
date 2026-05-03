@@ -49,6 +49,10 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 Bounded by `maxIterations` (default 5). No confirmation gate, no concurrency limit, no formatGuide — those are all things to *grow into* if/when the abstraction proves out, not things to retrofit prematurely.
 
+### Streaming
+
+`LLMProvider` exposes a parallel `stream(req, { signal? })` method returning `AsyncGenerator<StreamEvent>`. `complete()` is unchanged — buffered consumers pay no SSE-parsing tax. `streamAgent` (and `streamSpecialist`) yield `AgentEvent`s that interleave provider deltas with `tool_dispatch_start`/`tool_dispatch_done` and a final `agent_done`. `orchestrate` and the channel layer stay buffered. ADR 0004 records the decisions: scope = provider + runAgent, parallel methods (not unified-on-stream), normalized provider-shape events, AsyncGenerator API. Both adapters share `src/llm/sse.ts`. Both expose internal `streamFromAnthropicSSE` / `streamFromOpenAISSE` async generators that the tests target directly — no `globalThis.fetch` shimming.
+
 ### Orchestration layer
 
 Phase 2 added a thin router → specialist → tool stack on top of `runAgent`:
@@ -68,6 +72,7 @@ History caveat: `OrchestrateOpts.history` should contain only `user` and plain-t
 
 - `SessionStore` (`store.ts`) — `{ get, append }` interface keyed by `sessionId`. `inMemoryStore()` ships as the default, with per-session serialization to keep concurrent appends ordered. Real backends (Postgres/Redis) implement the same two methods.
 - `createChatHandler` (`http.ts`) — pure function-shaped handler `({ sessionId, message }) => { reply, routedTo }`. No HTTP framework dep; consumers wrap it. Persists only the user/assistant text pair, never tool transcripts (per ADR 0002).
+- `createStreamingChatHandler` (`http.ts`) — streaming sibling. Returns `(req, { signal? }) => AsyncGenerator<ChatStreamEvent>` yielding `routed`, `text_delta`, and a terminal `done`. Internal `AgentEvent`s (tool_dispatch, reasoning, message_start/stop) are intentionally not forwarded — drop down to `streamOrchestrate` if you need them. Persistence rule unchanged from the buffered handler. ADR 0005 records the design.
 - `telegram.ts` — `processUpdate(update, deps)` for pure update mapping plus two transports: `runPolling(opts)` (long-poll, default for PoC/local) and `createWebhookHandler(opts)` (returns `(req) => { status, body? }`, validates `X-Telegram-Bot-Api-Secret-Token` when configured). Accepts either Web `Headers` or a plain header dict. ADR 0003 records the long-poll-first decision.
 
 ADRs in `docs/adr/` track load-bearing channel-layer decisions. New decisions go there as numbered files; style choices stay in this file.
@@ -76,11 +81,10 @@ ADRs in `docs/adr/` track load-bearing channel-layer decisions. New decisions go
 
 The PoC is deliberately minimal. None of the following exist or should be added without a concrete reason driven by a real consumer:
 
-- Channel adapters (Telegram, HTTP, etc.)
 - Confirmation gate / WRITE_TOOLS taxonomy
 - Caching strategy / cache breakpoint hints
 - Usage / cost tracking
-- Streaming (no `stream` method on `LLMProvider`)
+- Telegram message-edit streaming (HTTP SSE landed in ADR 0005; Telegram has its own rate-limit problem and stays deferred)
 - Error taxonomy (`LLMError` class — adapters currently throw raw `Error`)
 - Additional adapters beyond the two protocol shapes
 - Multi-specialist chain/parallel orchestration modes
