@@ -1,7 +1,7 @@
 import type { LLMProvider } from "../llm/provider.ts";
-import type { Message } from "../llm/types.ts";
+import type { Message, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
-import type { AgentEvent, ConfirmCallback, RunAgentResult } from "./run.ts";
+import { addUsage, type AgentEvent, type ConfirmCallback, type RunAgentResult } from "./run.ts";
 import { runSpecialist, streamSpecialist, type Specialist } from "./specialist.ts";
 
 export interface OrchestrateOpts<TServices> {
@@ -25,6 +25,8 @@ export interface OrchestrateOpts<TServices> {
 export interface OrchestrateResult extends RunAgentResult {
   routedTo: string;
   routerRaw: string;
+  routerUsage: Usage;
+  specialistUsage: Usage;
 }
 
 export type OrchestrateStreamEvent =
@@ -63,7 +65,14 @@ export async function orchestrate<TServices>(
     confirm: opts.confirm,
   });
 
-  return { ...result, routedTo: chosen.name, routerRaw: cls.raw };
+  return {
+    ...result,
+    routedTo: chosen.name,
+    routerRaw: cls.raw,
+    routerUsage: cls.usage,
+    specialistUsage: result.usage,
+    usage: addUsage(cls.usage, result.usage),
+  };
 }
 
 export async function* streamOrchestrate<TServices>(
@@ -94,5 +103,12 @@ export async function* streamOrchestrate<TServices>(
     signal: opts.signal,
   });
 
-  return { ...agentResult, routedTo: chosen.name, routerRaw: cls.raw };
+  return {
+    ...agentResult,
+    routedTo: chosen.name,
+    routerRaw: cls.raw,
+    routerUsage: cls.usage,
+    specialistUsage: agentResult.usage,
+    usage: addUsage(cls.usage, agentResult.usage),
+  };
 }

@@ -53,6 +53,8 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 Bounded by `maxIterations` (default 5). No confirmation gate, no concurrency limit, no formatGuide — those are all things to *grow into* if/when the abstraction proves out, not things to retrofit prematurely.
 
+`RunAgentResult.usage: Usage` reports cumulative `{ inputTokens, outputTokens }` summed across every iteration's `complete()` (or `message_stop` event for `streamAgent`). `Classification.usage` carries the single router-call cost. `OrchestrateResult` adds `routerUsage` + `specialistUsage` and the inherited `usage` is the sum — cheap to wire metering on top, no double-accounting. `addUsage` / `zeroUsage` are exported helpers. Cost mapping is left to the consumer (per-model rate tables are user-space).
+
 ### Streaming
 
 `LLMProvider` exposes a parallel `stream(req, { signal? })` method returning `AsyncGenerator<StreamEvent>`. `complete()` is unchanged — buffered consumers pay no SSE-parsing tax. `streamAgent` (and `streamSpecialist`) yield `AgentEvent`s that interleave provider deltas with `tool_dispatch_start`/`tool_dispatch_done` and a final `agent_done`. `orchestrate` and the channel layer stay buffered. ADR 0004 records the decisions: scope = provider + runAgent, parallel methods (not unified-on-stream), normalized provider-shape events, AsyncGenerator API. Both adapters share `src/llm/sse.ts`. Both expose internal `streamFromAnthropicSSE` / `streamFromOpenAISSE` async generators that the tests target directly — no `globalThis.fetch` shimming.

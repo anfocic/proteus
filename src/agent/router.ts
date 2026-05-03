@@ -1,5 +1,5 @@
 import type { LLMProvider } from "../llm/provider.ts";
-import type { ContentBlock, Message } from "../llm/types.ts";
+import type { ContentBlock, Message, Usage } from "../llm/types.ts";
 
 export interface Intent {
   name: string;
@@ -18,6 +18,7 @@ export interface ClassifyOpts {
 export interface Classification {
   intent: string;
   raw: string;
+  usage: Usage;
 }
 
 export async function classifyIntent(opts: ClassifyOpts): Promise<Classification> {
@@ -56,7 +57,7 @@ export async function classifyIntent(opts: ClassifyOpts): Promise<Classification
         .join("");
 
   const intent = matchIntent(raw, opts.intents) ?? opts.fallback ?? opts.intents[0].name;
-  return { intent, raw };
+  return { intent, raw, usage: res.usage };
 }
 
 function matchIntent(raw: string, intents: Intent[]): string | null {
