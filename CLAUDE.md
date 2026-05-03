@@ -66,6 +66,18 @@ Hard rule unchanged: nothing in `src/agent/` may import an adapter file. Only `s
 
 History caveat: `OrchestrateOpts.history` should contain only `user` and plain-text `assistant` messages. Tool transcripts from a prior specialist are unsafe to re-feed because tool ids won't match the next specialist's schema.
 
+### Confirmation gate
+
+Per-tool opt-in destructive-action gating. A tool author marks a `ToolDef` with `requiresConfirmation: true` and (optionally) `summarize(input) => string`. The agent loop intercepts before invoking the handler: if the consumer supplied a `ConfirmCallback`, it is awaited; declined calls short-circuit to a `tool_result` whose content begins `[DECLINED] User declined this action: <summary>` (a stable marker so prompts/evaluators don't have to parse English). No global `WRITE_TOOLS` registry — each tool declares its own write-ness.
+
+Threading: `RunAgentInput.confirm` → `RunSpecialistOpts.confirm` → `OrchestrateOpts.confirm` → `ChatHandlerConfig.confirm`. `ToolContext` is deliberately *not* extended; gating is framework-mediated, not handler-mediated.
+
+Concurrency: confirms within a single turn are serialized in tool-block order (one prompt at a time); approved handlers then run via `Promise.all`. Consumers wanting parallel confirms can wrap their callback themselves.
+
+Streaming: `streamAgent` emits `tool_confirm_request` (with `summary`) and `tool_confirm_response` (with `confirmed: boolean`) around each gate. Observation-only — gating uses the callback. No `tool_dispatch_start` is yielded for declined tools.
+
+Scope: in-process callback only — works for CLI (`demo/confirm.ts`) and Telegram long-poll (`demo/telegram-confirm.ts`, in-memory `Map<toolUseId, resolve>` + inline buttons). Does *not* work for HTTP single-shot request/response; making the HTTP channel confirm-capable requires persisting pending tool state and resuming the loop on a subsequent request — separate Phase 3 item. Durable pending-action queues / cross-process resume are explicitly not provided.
+
 ### Channel layer
 
 `src/channel/` is the first non-LLM abstraction. Two pieces:
@@ -81,7 +93,6 @@ ADRs in `docs/adr/` track load-bearing channel-layer decisions. New decisions go
 The PoC is deliberately minimal. None of the following exist or should be added without a concrete reason driven by a real consumer:
 
 - Channel adapters (Telegram, HTTP, etc.)
-- Confirmation gate / WRITE_TOOLS taxonomy
 - Caching strategy / cache breakpoint hints
 - Usage / cost tracking
 - Channel-layer streaming (HTTP SSE response, Telegram message-edit streaming)

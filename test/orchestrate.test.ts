@@ -83,6 +83,45 @@ test("full path with tool dispatch", async () => {
   assert.equal(llm.calls.length, 3);
 });
 
+test("confirm threads orchestrate → specialist → run", async () => {
+  const llm = mockProvider([
+    response([text("weather")], "end_turn"),
+    response([toolUse("u1", "delete_city", { city: "Tokyo" })], "tool_use"),
+    response([text("declined.")], "end_turn"),
+  ]);
+  const tool: ToolDef = {
+    name: "delete_city",
+    description: "",
+    inputSchema: {},
+    requiresConfirmation: true,
+    summarize: (i) => `delete ${(i as { city: string }).city}`,
+    handler: () => "deleted",
+  };
+  const weatherWriter = createSpecialist({
+    name: "weather",
+    description: "weather questions",
+    role: "r",
+    tools: [tool],
+  });
+  const calls: string[] = [];
+  const result = await orchestrate({
+    llm,
+    routerModel: "m",
+    specialistModel: "m",
+    specialists: [weatherWriter, math],
+    services: {},
+    message: "delete Tokyo",
+    confirm: async (req) => {
+      calls.push(req.summary);
+      return false;
+    },
+  });
+  assert.deepEqual(calls, ["delete Tokyo"]);
+  const tr = result.messages.find((m) => m.role === "tool_result");
+  assert.ok(tr && tr.role === "tool_result");
+  assert.match(tr.content, /^\[DECLINED\]/);
+});
+
 test("garbage router output → falls back to first specialist", async () => {
   const llm = mockProvider([
     response([text("xyzzy")], "end_turn"),

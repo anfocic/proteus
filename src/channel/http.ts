@@ -1,5 +1,6 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import { orchestrate } from "../agent/orchestrate.ts";
+import type { ConfirmCallback } from "../agent/run.ts";
 import type { Specialist } from "../agent/specialist.ts";
 import type { SessionStore } from "./store.ts";
 
@@ -10,6 +11,7 @@ export interface ChatHandlerConfig<TServices> {
   specialists: Specialist<TServices>[];
   services: TServices;
   store: SessionStore;
+  confirm?: ConfirmCallback;
 }
 
 export interface ChatRequest {
@@ -38,6 +40,7 @@ export function createChatHandler<TServices>(
       services: config.services,
       message: req.message,
       history,
+      confirm: config.confirm,
     });
 
     // Only persist the safe-to-re-feed pair (per ADR 0002 + OrchestrateOpts.history caveat).

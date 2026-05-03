@@ -12,7 +12,14 @@ export type {
 export { anthropic } from "./llm/anthropic.ts";
 export { openaiCompat } from "./llm/openai-compat.ts";
 export { runAgent, streamAgent } from "./agent/run.ts";
-export type { AgentEvent, RunAgentInput, RunAgentResult, ToolDef } from "./agent/run.ts";
+export type {
+  AgentEvent,
+  ConfirmCallback,
+  ConfirmRequest,
+  RunAgentInput,
+  RunAgentResult,
+  ToolDef,
+} from "./agent/run.ts";
 export type { ToolContext } from "./agent/context.ts";
 export { createSpecialist, runSpecialist, streamSpecialist } from "./agent/specialist.ts";
 export type { Specialist, RunSpecialistOpts } from "./agent/specialist.ts";

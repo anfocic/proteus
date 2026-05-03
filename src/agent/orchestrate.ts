@@ -1,7 +1,7 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { Message } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
-import type { RunAgentResult } from "./run.ts";
+import type { ConfirmCallback, RunAgentResult } from "./run.ts";
 import { runSpecialist, type Specialist } from "./specialist.ts";
 
 export interface OrchestrateOpts<TServices> {
@@ -11,6 +11,7 @@ export interface OrchestrateOpts<TServices> {
   specialists: Specialist<TServices>[];
   services: TServices;
   message: string;
+  confirm?: ConfirmCallback;
   /**
    * Prior conversation. Should contain only `user` and plain-text `assistant`
    * messages. Tool transcripts (assistant `tool_use` blocks + `tool_result`
@@ -55,6 +56,7 @@ export async function orchestrate<TServices>(
     defaultModel: opts.specialistModel,
     messages: [...(opts.history ?? []), { role: "user", content: opts.message }],
     services: opts.services,
+    confirm: opts.confirm,
   });
 
   return { ...result, routedTo: chosen.name, routerRaw: cls.raw };
