@@ -36,7 +36,14 @@ interface AnthropicResponse {
     | { type: "tool_use"; id: string; name: string; input: unknown }
   >;
   stop_reason: string | null;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: AnthropicUsage;
+}
+
+interface AnthropicUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 export function anthropic(opts: {
@@ -79,10 +86,7 @@ export function anthropic(opts: {
         id: data.id,
         content: data.content.map(fromAnthropicBlock),
         stopReason: mapStopReason(data.stop_reason),
-        usage: {
-          inputTokens: data.usage.input_tokens,
-          outputTokens: data.usage.output_tokens,
-        },
+        usage: anthropicUsage(data.usage),
         raw: data,
       };
     },
@@ -166,7 +170,15 @@ export function anthropic(opts: {
 
 interface AnthropicMessageStart {
   type: "message_start";
-  message: { id: string; usage?: { input_tokens?: number; output_tokens?: number } };
+  message: {
+    id: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+  };
 }
 interface AnthropicContentBlockStart {
   type: "content_block_start";
@@ -226,6 +238,12 @@ export async function* streamFromAnthropicSSE(
         const p = payload as AnthropicMessageStart;
         usage.inputTokens = p.message.usage?.input_tokens ?? 0;
         usage.outputTokens = p.message.usage?.output_tokens ?? 0;
+        if (p.message.usage?.cache_creation_input_tokens !== undefined) {
+          usage.cacheCreationInputTokens = p.message.usage.cache_creation_input_tokens;
+        }
+        if (p.message.usage?.cache_read_input_tokens !== undefined) {
+          usage.cacheReadInputTokens = p.message.usage.cache_read_input_tokens;
+        }
         yield { type: "message_start", id: p.message.id };
         break;
       }
@@ -352,6 +370,20 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   const out: Partial<T> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+  }
+  return out;
+}
+
+function anthropicUsage(u: AnthropicUsage): Usage {
+  const out: Usage = {
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+  };
+  if (u.cache_creation_input_tokens !== undefined) {
+    out.cacheCreationInputTokens = u.cache_creation_input_tokens;
+  }
+  if (u.cache_read_input_tokens !== undefined) {
+    out.cacheReadInputTokens = u.cache_read_input_tokens;
   }
   return out;
 }

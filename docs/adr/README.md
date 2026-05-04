@@ -42,3 +42,6 @@ Numbering is sequential, zero-padded to 4 digits. Never renumber.
 | [0006](./0006-error-taxonomy.md) | Typed `LLMError` hierarchy from adapters | Accepted |
 | [0007](./0007-retry-wrapper.md) | Retry wrapper above the provider, not inside adapters | Accepted |
 | [0008](./0008-http-suspend-resume.md) | HTTP suspend/resume for the confirmation gate | Accepted |
+| [0009](./0009-evaluator.md) | Evaluator/quality-gate hook on orchestrate | Accepted |
+| [0010](./0010-prompt-caching-hints.md) | Anthropic prompt caching hints | Accepted |
+| [0011](./0011-cache-usage-metering.md) | Cache-token metering on `Usage` | Accepted |

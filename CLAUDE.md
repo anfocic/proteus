@@ -38,7 +38,9 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 `anthropic.ts` and `openai-compat.ts` exist together specifically because they cover the two structurally different LLM API shapes in the ecosystem. Every other major provider (Gemini, Mistral, Cohere, every OSS-model host) is a variant of one of these two. **If you add a third adapter, it should be because it's a third structurally distinct shape** — not just because you want a different vendor.
 
-**Caching hints (Anthropic-only).** `CompletionRequest.cacheSystemPrompt?: boolean` and `ToolSchema.cacheBreakpoint?: boolean` are the first deliberately-asymmetric fields on the normalized request: Anthropic emits `cache_control: { type: "ephemeral" }` on the system prompt and/or marked tools; OpenAI-compat reads neither field and ignores them silently. `Specialist.cacheRole?: boolean` is the productive sugar — flip one boolean per specialist to cache its static role prompt. The asymmetry is documented in the adapter and accepted in ADR 0010; future provider-specific hints (e.g. thinking-block controls) follow the same pattern. Cache hit metering (`cache_creation_input_tokens` / `cache_read_input_tokens`) is not yet typed on `Usage` — read `CompletionResponse.raw` for now.
+**Caching hints (Anthropic-only).** `CompletionRequest.cacheSystemPrompt?: boolean` and `ToolSchema.cacheBreakpoint?: boolean` are the first deliberately-asymmetric fields on the normalized request: Anthropic emits `cache_control: { type: "ephemeral" }` on the system prompt and/or marked tools; OpenAI-compat reads neither field and ignores them silently. `Specialist.cacheRole?: boolean` is the productive sugar — flip one boolean per specialist to cache its static role prompt. The asymmetry is documented in the adapter and accepted in ADR 0010; future provider-specific hints (e.g. thinking-block controls) follow the same pattern.
+
+**Cache metering.** `Usage.cacheCreationInputTokens?: number` and `Usage.cacheReadInputTokens?: number` are optional fields populated by both adapters when the host reports them. Anthropic emits both (separate pricing tiers); OpenAI-compat emits only `cacheReadInputTokens` from `prompt_tokens_details.cached_tokens`. Absence is information — `undefined` means "host did not report," distinct from `0`. `addUsage` is undefined-aware: `undefined + undefined → undefined`, otherwise treat undefined as 0 and sum. Aggregation through `runAgent`, `orchestrate`, router/specialist/evaluator splits is automatic. Cost mapping stays in user-space. ADR 0011.
 
 **Errors.** Both adapters throw typed errors from `src/llm/errors.ts`: `LLMAuthError` (401/403), `LLMRateLimitError` (429, with `retryAfter` when the response has a numeric `Retry-After` header), `LLMBadRequestError` (400/422), `LLMServerError` (5xx), `LLMTransportError` (fetch rejection / mid-stream disconnect — `cause` chained to the underlying error), `LLMStreamError` (200 OK but missing body or unrecoverable SSE shape). All extend `LLMError` and carry `provider`, `status?`, `body?`, `parsed?`, `phase: "request" | "stream"`, plus a `code` discriminator for switch-style consumers. **`AbortError` is never wrapped** — it surfaces as a `DOMException` so callers can distinguish cancellation from failure (`isAbortError(err)` is the helper). Auto-retry is out of scope inside adapters; layer it above. ADR 0006.
 
@@ -114,8 +116,7 @@ ADRs in `docs/adr/` track load-bearing channel-layer decisions. New decisions go
 
 The PoC is deliberately minimal. None of the following exist or should be added without a concrete reason driven by a real consumer:
 
-- Caching strategy / cache breakpoint hints
-- Usage / cost tracking
+- Cost mapping / per-model rate tables (counts are exposed; pricing stays in user-space)
 - Telegram message-edit streaming (HTTP SSE landed in ADR 0005; Telegram has its own rate-limit problem and stays deferred)
 - HTTP suspend/resume for confirm gate (in-process callback only today)
 - Auto-retry / backoff layer on top of the typed error hierarchy

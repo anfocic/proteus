@@ -28,6 +28,19 @@ export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error";
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Tokens written to the prompt cache on this turn. Anthropic-only:
+   * `usage.cache_creation_input_tokens`. Undefined for OpenAI-compat hosts
+   * (no equivalent concept — caching is implicit, no creation tier).
+   */
+  cacheCreationInputTokens?: number;
+  /**
+   * Tokens served from the prompt cache on this turn. Anthropic:
+   * `usage.cache_read_input_tokens`. OpenAI-compat:
+   * `usage.prompt_tokens_details.cached_tokens`. Undefined when the host
+   * does not report it.
+   */
+  cacheReadInputTokens?: number;
 }
 
 export type Message =
