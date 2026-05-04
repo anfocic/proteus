@@ -55,6 +55,9 @@ export { classifyIntent } from "./agent/router.ts";
 export type { Intent, ClassifyOpts, Classification } from "./agent/router.ts";
 export { orchestrate, resumeOrchestrate, streamOrchestrate } from "./agent/orchestrate.ts";
 export type {
+  EvaluatorFn,
+  EvaluatorInput,
+  EvaluatorVerdict,
   OrchestrateOpts,
   OrchestrateResult,
   OrchestrateStreamEvent,

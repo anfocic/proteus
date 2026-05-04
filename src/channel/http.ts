@@ -4,6 +4,7 @@ import {
   resumeOrchestrate,
   streamOrchestrate,
 } from "../agent/orchestrate.ts";
+import type { EvaluatorFn } from "../agent/orchestrate.ts";
 import type { ConfirmCallback } from "../agent/run.ts";
 import type { Specialist } from "../agent/specialist.ts";
 import type { PendingStore } from "./pending.ts";
@@ -27,6 +28,12 @@ export interface ChatHandlerConfig<TServices> {
    * unresolved confirmation surfaces as an error tool_result (as before).
    */
   pendingStore?: PendingStore;
+  /**
+   * Optional quality gate. Threads to `orchestrate` on the buffered handler
+   * only — `createStreamingChatHandler` does not support evaluators.
+   */
+  evaluate?: EvaluatorFn;
+  maxEvaluatorAttempts?: number;
 }
 
 export interface ChatRequest {
@@ -121,6 +128,8 @@ export function createChatHandler<TServices>(
       message: req.message,
       history,
       confirm,
+      evaluate: config.evaluate,
+      maxEvaluatorAttempts: config.maxEvaluatorAttempts,
     });
 
     await config.store.append(req.sessionId, [{ role: "user", content: req.message }]);
@@ -161,7 +170,7 @@ export type StreamingChatHandler = (
 ) => AsyncGenerator<ChatStreamEvent, void, void>;
 
 export function createStreamingChatHandler<TServices>(
-  config: Omit<ChatHandlerConfig<TServices>, "pendingStore">,
+  config: Omit<ChatHandlerConfig<TServices>, "pendingStore" | "evaluate" | "maxEvaluatorAttempts">,
 ): StreamingChatHandler {
   return async function* (req, opts) {
     const history = await config.store.get(req.sessionId);
