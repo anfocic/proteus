@@ -63,13 +63,48 @@ would need to interleave step boundaries with deltas, plus decide how
 multi-specialist token usage and confirms compose — out of scope for the
 intrebit migration.
 
-## Decision (parallel — next commit)
+## Decision (parallel)
 
-Parallel-mode dispatch lands as a sibling commit: `Promise.allSettled`
-fan-out against the original message, fulfilled `finalText`s joined with
-`"\n\n---\n\n"`, rejections preserved in `steps[]` but dropped from the
-joined output. This ADR will be amended with the parallel-specific
-sections when that commit lands.
+When `cls.mode === "parallel"`:
+
+1. `Promise.allSettled` fan-out — every matched specialist runs against
+   the **original** `opts.message` (no carry-over by definition).
+2. Fulfilled `finalText`s are joined by `parallelAggregator` (default:
+   `"\n\n---\n\n"` separator). Rejections are preserved in
+   `OrchestrateResult.steps[]` but dropped from the joined `finalText`.
+3. Usage = router + sum across fulfilled steps only.
+4. `routedTo` is the comma-joined intent names from the router (display
+   hint for downstream UI; structured info lives on `steps`).
+5. `messages: []` and `iterations: 0` on the result — neither is
+   meaningful when multiple specialists run in parallel.
+
+### Parallel-mode constraints
+
+- **No `evaluate`.** Retrying one specialist would drop the others. Throws
+  if `evaluate` is set with `mode: "parallel"`.
+- **No `"pending"` confirmations.** Suspend/resume assumes a single
+  inflight specialist per session, which parallel breaks. The framework
+  wraps the user's `confirm` callback so any branch returning `"pending"`
+  rejects with a sentinel error; the orchestrate layer detects the
+  sentinel after `allSettled` and escalates by throwing — rather than
+  silently surfacing a rejected step that the user never sees.
+  Parallel mode is intended for read-only fan-out (the prototypical
+  "show pipeline + today's tasks" pattern).
+
+### Failure semantics
+
+`steps[i].status === "rejected"` carries an `error: Error`. All-fail
+returns an `OrchestrateResult` with `finalText: ""` and `steps[]` full of
+rejections — no top-level throw. Callers inspect `steps` to surface
+per-branch errors. The exception is the parallel-pending guard above,
+which always throws.
+
+### Streaming
+
+`streamOrchestrate` continues to throw on parallel mode. Streaming
+multi-specialist fan-out would need a stable interleaving for token
+deltas plus a per-branch dispatch event; deferred until a real consumer
+asks.
 
 ## Why this shape
 

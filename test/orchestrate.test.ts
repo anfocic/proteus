@@ -138,23 +138,3 @@ test("garbage router output → falls back to first specialist", async () => {
   assert.equal(result.routerReasoning, "router parse failed");
 });
 
-test("router returns mode=parallel → orchestrate throws (until commit 3)", async () => {
-  const llm = mockProvider([
-    response(
-      [text(JSON.stringify({ intents: ["weather", "math"], mode: "parallel" }))],
-      "end_turn",
-    ),
-  ]);
-  await assert.rejects(
-    () =>
-      orchestrate({
-        llm,
-        routerModel: "m",
-        specialistModel: "m",
-        specialists: [weather, math],
-        services: {},
-        message: "x",
-      }),
-    /parallel mode not yet implemented/,
-  );
-});

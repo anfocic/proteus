@@ -66,6 +66,11 @@ export {
   DEFAULT_CHAIN_CONTEXT_CHARS,
 } from "./agent/chain.ts";
 export type { ChainContextFormatter, ChainStep } from "./agent/chain.ts";
+export {
+  defaultParallelAggregator,
+  PARALLEL_RESULT_SEPARATOR,
+} from "./agent/parallel.ts";
+export type { ParallelAggregator, ParallelStepResult } from "./agent/parallel.ts";
 export { orchestrate, resumeOrchestrate, streamOrchestrate } from "./agent/orchestrate.ts";
 export type {
   EvaluatorFn,

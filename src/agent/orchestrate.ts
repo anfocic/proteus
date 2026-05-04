@@ -22,6 +22,11 @@ import {
   type ChainContextFormatter,
   type ChainStep,
 } from "./chain.ts";
+import {
+  defaultParallelAggregator,
+  type ParallelAggregator,
+  type ParallelStepResult,
+} from "./parallel.ts";
 
 export interface EvaluatorInput {
   finalText: string;
@@ -80,6 +85,11 @@ export interface OrchestrateOpts<TServices> {
    * Chain mode only. Override the default `<previous_step_output>...` formatter.
    */
   chainContextFormatter?: ChainContextFormatter;
+  /**
+   * Parallel mode only. Override the default aggregator that joins fulfilled
+   * step `finalText`s with `\n\n---\n\n`.
+   */
+  parallelAggregator?: ParallelAggregator;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
@@ -91,10 +101,10 @@ export interface OrchestrateResult extends RunAgentResult {
   evaluatorAttempts: number;
   evaluatorUsage: Usage;
   /**
-   * Populated for `mode: "chain"` with one entry per executed step.
-   * Undefined for single mode (zero-overhead default).
+   * Populated for `mode: "chain"` (`ChainStep[]`) or `mode: "parallel"`
+   * (`ParallelStepResult[]`). Undefined for single mode (zero-overhead).
    */
-  steps?: ChainStep[];
+  steps?: ChainStep[] | ParallelStepResult[];
 }
 
 export interface ResumeOrchestrateOpts<TServices> {
@@ -164,7 +174,7 @@ export async function orchestrate<TServices>(
     case "chain":
       return runChain(opts, cls);
     case "parallel":
-      throw new Error("orchestrate: parallel mode not yet implemented");
+      return runParallel(opts, cls);
   }
 }
 
@@ -225,6 +235,102 @@ async function runSingle<TServices>(
     evaluatorAttempts: attempts,
     evaluatorUsage,
     usage: addUsage(addUsage(cls.usage, specialistUsage), evaluatorUsage),
+  };
+}
+
+async function runParallel<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
+  if (opts.evaluate) {
+    throw new Error(
+      "orchestrate: 'evaluate' is not supported with mode=parallel — retrying one specialist would drop the others' work. Use single mode for evaluator-gated flows.",
+    );
+  }
+
+  // Wrap confirm so parallel branches reject any "pending" decision: the
+  // suspend/resume model assumes one inflight specialist per session, which
+  // parallel dispatch breaks. The thrown sentinel is detected post-allSettled
+  // and re-thrown at the orchestrate level (rather than silently dropping the
+  // failed step).
+  const PARALLEL_PENDING_SENTINEL = Symbol.for("orchestrate.parallel-pending");
+  const confirm: ConfirmCallback | undefined = opts.confirm
+    ? async (req) => {
+        const decision = await opts.confirm!(req);
+        if (decision === "pending") {
+          const err = new Error(
+            "orchestrate: 'pending' confirm decision is not supported in mode=parallel — use single mode for suspend/resume flows.",
+          );
+          (err as { sentinel?: symbol }).sentinel = PARALLEL_PENDING_SENTINEL;
+          throw err;
+        }
+        return decision;
+      }
+    : undefined;
+
+  const matched = cls.intents.map((intent) => ({
+    intent,
+    spec: opts.specialists.find((s) => s.name === intent.name),
+  }));
+
+  const settled = await Promise.allSettled(
+    matched.map(({ intent, spec }) =>
+      spec
+        ? runSpecialist({
+            llm: opts.llm,
+            specialist: spec,
+            defaultModel: opts.specialistModel,
+            messages: [
+              ...(opts.history ?? []),
+              { role: "user", content: opts.message },
+            ],
+            services: opts.services,
+            confirm,
+          })
+        : Promise.reject(
+            new Error(`unknown specialist '${intent.name}' in parallel dispatch`),
+          ),
+    ),
+  );
+
+  // If any branch tripped the pending-in-parallel guard, escalate.
+  for (const r of settled) {
+    if (r.status === "rejected") {
+      const reason = r.reason as { sentinel?: symbol; message?: string } | undefined;
+      if (reason && reason.sentinel === PARALLEL_PENDING_SENTINEL) {
+        throw r.reason;
+      }
+    }
+  }
+
+  const steps: ParallelStepResult[] = settled.map((r, i) => {
+    const name = matched[i].intent.name;
+    return r.status === "fulfilled"
+      ? { specialist: name, status: "fulfilled", result: r.value }
+      : { specialist: name, status: "rejected", error: r.reason instanceof Error ? r.reason : new Error(String(r.reason)) };
+  });
+
+  const aggregator = opts.parallelAggregator ?? defaultParallelAggregator;
+  const finalText = aggregator(steps);
+
+  let specialistUsage: Usage = zeroUsage();
+  for (const s of steps) {
+    if (s.status === "fulfilled") specialistUsage = addUsage(specialistUsage, s.result.usage);
+  }
+
+  return {
+    finalText,
+    messages: [],
+    iterations: 0,
+    stopReason: "end_turn",
+    usage: addUsage(cls.usage, specialistUsage),
+    routedTo: cls.intents.map((i) => i.name).join(","),
+    routerReasoning: cls.reasoning,
+    routerUsage: cls.usage,
+    specialistUsage,
+    evaluatorAttempts: 1,
+    evaluatorUsage: zeroUsage(),
+    steps,
   };
 }
 
