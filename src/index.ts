@@ -66,6 +66,9 @@ export {
   DEFAULT_CHAIN_CONTEXT_CHARS,
 } from "./agent/chain.ts";
 export type { ChainContextFormatter, ChainStep } from "./agent/chain.ts";
+export { mapLimit } from "./agent/concurrency.ts";
+export { trimToBudget, estimateMessageCost } from "./agent/budget.ts";
+export type { Tokenize, TrimToBudgetOpts } from "./agent/budget.ts";
 export {
   defaultParallelAggregator,
   PARALLEL_RESULT_SEPARATOR,

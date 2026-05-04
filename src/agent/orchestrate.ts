@@ -90,6 +90,12 @@ export interface OrchestrateOpts<TServices> {
    * step `finalText`s with `\n\n---\n\n`.
    */
   parallelAggregator?: ParallelAggregator;
+  /**
+   * Cap on concurrent tool-handler executions within a single specialist
+   * turn. Forwarded to every `runSpecialist` call (single, chain, parallel).
+   * Confirms remain serialized regardless. Undefined → unbounded.
+   */
+  toolConcurrency?: number;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
@@ -116,6 +122,7 @@ export interface ResumeOrchestrateOpts<TServices> {
   suspended: import("./run.ts").SuspensionPayload;
   resume: import("./run.ts").ResumeDecision;
   confirm?: ConfirmCallback;
+  toolConcurrency?: number;
 }
 
 export async function resumeOrchestrate<TServices>(
@@ -133,6 +140,7 @@ export async function resumeOrchestrate<TServices>(
     suspended: opts.suspended,
     resume: opts.resume,
     confirm: opts.confirm,
+    toolConcurrency: opts.toolConcurrency,
   });
   return {
     ...result,
@@ -206,6 +214,7 @@ async function runSingle<TServices>(
       messages,
       services: opts.services,
       confirm: opts.confirm,
+      toolConcurrency: opts.toolConcurrency,
     });
     specialistUsage = addUsage(specialistUsage, result.usage);
 
@@ -286,6 +295,7 @@ async function runParallel<TServices>(
             ],
             services: opts.services,
             confirm,
+            toolConcurrency: opts.toolConcurrency,
           })
         : Promise.reject(
             new Error(`unknown specialist '${intent.name}' in parallel dispatch`),
@@ -437,6 +447,7 @@ export async function* streamOrchestrate<TServices>(
     messages: [...(opts.history ?? []), { role: "user", content: opts.message }],
     services: opts.services,
     confirm: opts.confirm,
+    toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
   });
 

@@ -43,6 +43,7 @@ export interface RunSpecialistOpts<TServices> {
   maxIterations?: number;
   maxTokens?: number;
   temperature?: number;
+  toolConcurrency?: number;
 }
 
 export async function runSpecialist<TServices>(
@@ -60,6 +61,7 @@ export async function runSpecialist<TServices>(
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
+    toolConcurrency: opts.toolConcurrency,
   });
 }
 
@@ -74,6 +76,7 @@ export interface ResumeSpecialistOpts<TServices> {
   maxIterations?: number;
   maxTokens?: number;
   temperature?: number;
+  toolConcurrency?: number;
 }
 
 export async function resumeSpecialist<TServices>(
@@ -92,6 +95,7 @@ export async function resumeSpecialist<TServices>(
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
+    toolConcurrency: opts.toolConcurrency,
   });
 }
 
@@ -110,6 +114,7 @@ export async function* streamSpecialist<TServices>(
     maxIterations: opts.maxIterations,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
+    toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
   });
 }
