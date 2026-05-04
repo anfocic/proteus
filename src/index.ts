@@ -52,7 +52,13 @@ export type {
   ResumeSpecialistOpts,
 } from "./agent/specialist.ts";
 export { classifyIntent } from "./agent/router.ts";
-export type { Intent, ClassifyOpts, Classification } from "./agent/router.ts";
+export type {
+  Intent,
+  ClassifyOpts,
+  Classification,
+  DispatchMode,
+} from "./agent/router.ts";
+export { tryParseJSON, stripJsonFences } from "./agent/json-repair.ts";
 export { orchestrate, resumeOrchestrate, streamOrchestrate } from "./agent/orchestrate.ts";
 export type {
   EvaluatorFn,

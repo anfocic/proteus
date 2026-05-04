@@ -104,5 +104,5 @@ const result = await orchestrate({
 
 console.log(`[routed to: ${result.routedTo}] ${result.finalText}`);
 console.log(
-  `(router raw: ${JSON.stringify(result.routerRaw)}, ${result.iterations} iterations, stop=${result.stopReason})`,
+  `(router reasoning: ${JSON.stringify(result.routerReasoning ?? "")}, ${result.iterations} iterations, stop=${result.stopReason})`,
 );

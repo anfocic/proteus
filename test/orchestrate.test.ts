@@ -19,7 +19,7 @@ const math = createSpecialist({
 
 test("routes to correct specialist", async () => {
   const llm = mockProvider([
-    response([text("math")], "end_turn"),
+    response([text(JSON.stringify({ intents: ["math"], mode: "single" }))], "end_turn"),
     response([text("42")], "end_turn"),
   ]);
   const result = await orchestrate({
@@ -31,13 +31,12 @@ test("routes to correct specialist", async () => {
     message: "what is 6 times 7",
   });
   assert.equal(result.routedTo, "math");
-  assert.equal(result.routerRaw, "math");
   assert.equal(result.finalText, "42");
 });
 
 test("router and specialist use different models", async () => {
   const llm = mockProvider([
-    response([text("weather")], "end_turn"),
+    response([text(JSON.stringify({ intents: ["weather"], mode: "single" }))], "end_turn"),
     response([text("sunny")], "end_turn"),
   ]);
   await orchestrate({
@@ -54,7 +53,7 @@ test("router and specialist use different models", async () => {
 
 test("full path with tool dispatch", async () => {
   const llm = mockProvider([
-    response([text("weather")], "end_turn"),
+    response([text(JSON.stringify({ intents: ["weather"], mode: "single" }))], "end_turn"),
     response([toolUse("u1", "get_weather", { city: "Tokyo" })], "tool_use"),
     response([text("It's raining in Tokyo.")], "end_turn"),
   ]);
@@ -85,7 +84,7 @@ test("full path with tool dispatch", async () => {
 
 test("confirm threads orchestrate → specialist → run", async () => {
   const llm = mockProvider([
-    response([text("weather")], "end_turn"),
+    response([text(JSON.stringify({ intents: ["weather"], mode: "single" }))], "end_turn"),
     response([toolUse("u1", "delete_city", { city: "Tokyo" })], "tool_use"),
     response([text("declined.")], "end_turn"),
   ]);
@@ -136,5 +135,47 @@ test("garbage router output → falls back to first specialist", async () => {
     message: "hi",
   });
   assert.equal(result.routedTo, "weather");
-  assert.equal(result.routerRaw, "xyzzy");
+  assert.equal(result.routerReasoning, "router parse failed");
+});
+
+test("router returns mode=chain → orchestrate throws (until commit 2)", async () => {
+  const llm = mockProvider([
+    response(
+      [text(JSON.stringify({ intents: ["weather", "math"], mode: "chain" }))],
+      "end_turn",
+    ),
+  ]);
+  await assert.rejects(
+    () =>
+      orchestrate({
+        llm,
+        routerModel: "m",
+        specialistModel: "m",
+        specialists: [weather, math],
+        services: {},
+        message: "x",
+      }),
+    /chain mode not yet implemented/,
+  );
+});
+
+test("router returns mode=parallel → orchestrate throws (until commit 3)", async () => {
+  const llm = mockProvider([
+    response(
+      [text(JSON.stringify({ intents: ["weather", "math"], mode: "parallel" }))],
+      "end_turn",
+    ),
+  ]);
+  await assert.rejects(
+    () =>
+      orchestrate({
+        llm,
+        routerModel: "m",
+        specialistModel: "m",
+        specialists: [weather, math],
+        services: {},
+        message: "x",
+      }),
+    /parallel mode not yet implemented/,
+  );
 });

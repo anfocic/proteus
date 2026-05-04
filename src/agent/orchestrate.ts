@@ -1,6 +1,7 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
+import type { DispatchMode } from "./router.ts";
 import {
   addUsage,
   zeroUsage,
@@ -68,7 +69,8 @@ export interface OrchestrateOpts<TServices> {
 
 export interface OrchestrateResult extends RunAgentResult {
   routedTo: string;
-  routerRaw: string;
+  /** Router-supplied reasoning, when present. */
+  routerReasoning?: string;
   routerUsage: Usage;
   specialistUsage: Usage;
   evaluatorAttempts: number;
@@ -105,7 +107,6 @@ export async function resumeOrchestrate<TServices>(
   return {
     ...result,
     routedTo: chosen.name,
-    routerRaw: "",
     routerUsage: { inputTokens: 0, outputTokens: 0 },
     specialistUsage: result.usage,
     evaluatorAttempts: 1,
@@ -114,7 +115,7 @@ export async function resumeOrchestrate<TServices>(
 }
 
 export type OrchestrateStreamEvent =
-  | { type: "routed"; routedTo: string; routerRaw: string }
+  | { type: "routed"; routedTo: string; routerReasoning?: string }
   | AgentEvent;
 
 function intentsOf<TServices>(specialists: Specialist<TServices>[]): Intent[] {
@@ -137,8 +138,16 @@ export async function orchestrate<TServices>(
     history: opts.history,
   });
 
+  if (cls.mode === "chain") {
+    throw new Error("orchestrate: chain mode not yet implemented");
+  }
+  if (cls.mode === "parallel") {
+    throw new Error("orchestrate: parallel mode not yet implemented");
+  }
+
+  const intent = cls.intents[0];
   const chosen =
-    opts.specialists.find((s) => s.name === cls.intent) ?? opts.specialists[0];
+    opts.specialists.find((s) => s.name === intent.name) ?? opts.specialists[0];
 
   const maxAttempts = Math.max(1, opts.maxEvaluatorAttempts ?? DEFAULT_MAX_EVALUATOR_ATTEMPTS);
   let messages: Message[] = [
@@ -183,7 +192,7 @@ export async function orchestrate<TServices>(
   return {
     ...result,
     routedTo: chosen.name,
-    routerRaw: cls.raw,
+    routerReasoning: cls.reasoning,
     routerUsage: cls.usage,
     specialistUsage,
     evaluatorAttempts: attempts,
@@ -210,10 +219,18 @@ export async function* streamOrchestrate<TServices>(
     history: opts.history,
   });
 
-  const chosen =
-    opts.specialists.find((s) => s.name === cls.intent) ?? opts.specialists[0];
+  if (cls.mode === "chain") {
+    throw new Error("streamOrchestrate: chain mode not yet implemented");
+  }
+  if (cls.mode === "parallel") {
+    throw new Error("streamOrchestrate: parallel mode not yet implemented");
+  }
 
-  yield { type: "routed", routedTo: chosen.name, routerRaw: cls.raw };
+  const intent = cls.intents[0];
+  const chosen =
+    opts.specialists.find((s) => s.name === intent.name) ?? opts.specialists[0];
+
+  yield { type: "routed", routedTo: chosen.name, routerReasoning: cls.reasoning };
 
   const agentResult = yield* streamSpecialist({
     llm: opts.llm,
@@ -228,7 +245,7 @@ export async function* streamOrchestrate<TServices>(
   return {
     ...agentResult,
     routedTo: chosen.name,
-    routerRaw: cls.raw,
+    routerReasoning: cls.reasoning,
     routerUsage: cls.usage,
     specialistUsage: agentResult.usage,
     evaluatorAttempts: 1,

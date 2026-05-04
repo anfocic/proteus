@@ -45,3 +45,4 @@ Numbering is sequential, zero-padded to 4 digits. Never renumber.
 | [0009](./0009-evaluator.md) | Evaluator/quality-gate hook on orchestrate | Accepted |
 | [0010](./0010-prompt-caching-hints.md) | Anthropic prompt caching hints | Accepted |
 | [0011](./0011-cache-usage-metering.md) | Cache-token metering on `Usage` | Accepted |
+| [0012](./0012-router-multi-intent.md) | Router multi-intent + lenient JSON parse | Accepted |
