@@ -52,7 +52,25 @@ export type {
   ResumeSpecialistOpts,
 } from "./agent/specialist.ts";
 export { classifyIntent } from "./agent/router.ts";
-export type { Intent, ClassifyOpts, Classification } from "./agent/router.ts";
+export type {
+  Intent,
+  ClassifyOpts,
+  Classification,
+  DispatchMode,
+} from "./agent/router.ts";
+export { tryParseJSON, stripJsonFences } from "./agent/json-repair.ts";
+export {
+  ChainDispatchError,
+  defaultChainFormatter,
+  escapeXmlAngles,
+  DEFAULT_CHAIN_CONTEXT_CHARS,
+} from "./agent/chain.ts";
+export type { ChainContextFormatter, ChainStep } from "./agent/chain.ts";
+export {
+  defaultParallelAggregator,
+  PARALLEL_RESULT_SEPARATOR,
+} from "./agent/parallel.ts";
+export type { ParallelAggregator, ParallelStepResult } from "./agent/parallel.ts";
 export { orchestrate, resumeOrchestrate, streamOrchestrate } from "./agent/orchestrate.ts";
 export type {
   EvaluatorFn,

@@ -1,6 +1,7 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
+import type { Classification } from "./router.ts";
 import {
   addUsage,
   zeroUsage,
@@ -14,6 +15,18 @@ import {
   streamSpecialist,
   type Specialist,
 } from "./specialist.ts";
+import {
+  ChainDispatchError,
+  DEFAULT_CHAIN_CONTEXT_CHARS,
+  defaultChainFormatter,
+  type ChainContextFormatter,
+  type ChainStep,
+} from "./chain.ts";
+import {
+  defaultParallelAggregator,
+  type ParallelAggregator,
+  type ParallelStepResult,
+} from "./parallel.ts";
 
 export interface EvaluatorInput {
   finalText: string;
@@ -55,24 +68,43 @@ export interface OrchestrateOpts<TServices> {
    * appended as a user message, bounded by `maxEvaluatorAttempts`. Caller
    * writes the LLM call (or heuristic) — no built-in evaluator. Reports its
    * own LLM cost via `usage` on the verdict.
+   *
+   * Single mode only — set on `mode: "chain"` throws.
    */
   evaluate?: EvaluatorFn;
   /**
    * Max specialist attempts when an evaluator is set. Default 2 (= 1 retry).
-   * 1 = evaluate-only (no retry, useful for telemetry). Ignored if `evaluate`
-   * is undefined. At cap with `ok: false`, the last result is returned
-   * without throwing — caller can detect via `evaluatorAttempts === maxEvaluatorAttempts`.
    */
   maxEvaluatorAttempts?: number;
+  /**
+   * Chain mode only. Max characters of the prior step's `finalText` carried
+   * into the next step's user message. Default 2000 (intrebit's value).
+   */
+  chainContextChars?: number;
+  /**
+   * Chain mode only. Override the default `<previous_step_output>...` formatter.
+   */
+  chainContextFormatter?: ChainContextFormatter;
+  /**
+   * Parallel mode only. Override the default aggregator that joins fulfilled
+   * step `finalText`s with `\n\n---\n\n`.
+   */
+  parallelAggregator?: ParallelAggregator;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
   routedTo: string;
-  routerRaw: string;
+  /** Router-supplied reasoning, when present. */
+  routerReasoning?: string;
   routerUsage: Usage;
   specialistUsage: Usage;
   evaluatorAttempts: number;
   evaluatorUsage: Usage;
+  /**
+   * Populated for `mode: "chain"` (`ChainStep[]`) or `mode: "parallel"`
+   * (`ParallelStepResult[]`). Undefined for single mode (zero-overhead).
+   */
+  steps?: ChainStep[] | ParallelStepResult[];
 }
 
 export interface ResumeOrchestrateOpts<TServices> {
@@ -105,7 +137,6 @@ export async function resumeOrchestrate<TServices>(
   return {
     ...result,
     routedTo: chosen.name,
-    routerRaw: "",
     routerUsage: { inputTokens: 0, outputTokens: 0 },
     specialistUsage: result.usage,
     evaluatorAttempts: 1,
@@ -114,7 +145,7 @@ export async function resumeOrchestrate<TServices>(
 }
 
 export type OrchestrateStreamEvent =
-  | { type: "routed"; routedTo: string; routerRaw: string }
+  | { type: "routed"; routedTo: string; routerReasoning?: string }
   | AgentEvent;
 
 function intentsOf<TServices>(specialists: Specialist<TServices>[]): Intent[] {
@@ -137,8 +168,23 @@ export async function orchestrate<TServices>(
     history: opts.history,
   });
 
+  switch (cls.mode) {
+    case "single":
+      return runSingle(opts, cls);
+    case "chain":
+      return runChain(opts, cls);
+    case "parallel":
+      return runParallel(opts, cls);
+  }
+}
+
+async function runSingle<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
+  const intent = cls.intents[0];
   const chosen =
-    opts.specialists.find((s) => s.name === cls.intent) ?? opts.specialists[0];
+    opts.specialists.find((s) => s.name === intent.name) ?? opts.specialists[0];
 
   const maxAttempts = Math.max(1, opts.maxEvaluatorAttempts ?? DEFAULT_MAX_EVALUATOR_ATTEMPTS);
   let messages: Message[] = [
@@ -183,12 +229,173 @@ export async function orchestrate<TServices>(
   return {
     ...result,
     routedTo: chosen.name,
-    routerRaw: cls.raw,
+    routerReasoning: cls.reasoning,
     routerUsage: cls.usage,
     specialistUsage,
     evaluatorAttempts: attempts,
     evaluatorUsage,
     usage: addUsage(addUsage(cls.usage, specialistUsage), evaluatorUsage),
+  };
+}
+
+async function runParallel<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
+  if (opts.evaluate) {
+    throw new Error(
+      "orchestrate: 'evaluate' is not supported with mode=parallel — retrying one specialist would drop the others' work. Use single mode for evaluator-gated flows.",
+    );
+  }
+
+  // Wrap confirm so parallel branches reject any "pending" decision: the
+  // suspend/resume model assumes one inflight specialist per session, which
+  // parallel dispatch breaks. The thrown sentinel is detected post-allSettled
+  // and re-thrown at the orchestrate level (rather than silently dropping the
+  // failed step).
+  const PARALLEL_PENDING_SENTINEL = Symbol.for("orchestrate.parallel-pending");
+  const confirm: ConfirmCallback | undefined = opts.confirm
+    ? async (req) => {
+        const decision = await opts.confirm!(req);
+        if (decision === "pending") {
+          const err = new Error(
+            "orchestrate: 'pending' confirm decision is not supported in mode=parallel — use single mode for suspend/resume flows.",
+          );
+          (err as { sentinel?: symbol }).sentinel = PARALLEL_PENDING_SENTINEL;
+          throw err;
+        }
+        return decision;
+      }
+    : undefined;
+
+  const matched = cls.intents.map((intent) => ({
+    intent,
+    spec: opts.specialists.find((s) => s.name === intent.name),
+  }));
+
+  const settled = await Promise.allSettled(
+    matched.map(({ intent, spec }) =>
+      spec
+        ? runSpecialist({
+            llm: opts.llm,
+            specialist: spec,
+            defaultModel: opts.specialistModel,
+            messages: [
+              ...(opts.history ?? []),
+              { role: "user", content: opts.message },
+            ],
+            services: opts.services,
+            confirm,
+          })
+        : Promise.reject(
+            new Error(`unknown specialist '${intent.name}' in parallel dispatch`),
+          ),
+    ),
+  );
+
+  // If any branch tripped the pending-in-parallel guard, escalate.
+  for (const r of settled) {
+    if (r.status === "rejected") {
+      const reason = r.reason as { sentinel?: symbol; message?: string } | undefined;
+      if (reason && reason.sentinel === PARALLEL_PENDING_SENTINEL) {
+        throw r.reason;
+      }
+    }
+  }
+
+  const steps: ParallelStepResult[] = settled.map((r, i) => {
+    const name = matched[i].intent.name;
+    return r.status === "fulfilled"
+      ? { specialist: name, status: "fulfilled", result: r.value }
+      : { specialist: name, status: "rejected", error: r.reason instanceof Error ? r.reason : new Error(String(r.reason)) };
+  });
+
+  const aggregator = opts.parallelAggregator ?? defaultParallelAggregator;
+  const finalText = aggregator(steps);
+
+  let specialistUsage: Usage = zeroUsage();
+  for (const s of steps) {
+    if (s.status === "fulfilled") specialistUsage = addUsage(specialistUsage, s.result.usage);
+  }
+
+  return {
+    finalText,
+    messages: [],
+    iterations: 0,
+    stopReason: "end_turn",
+    usage: addUsage(cls.usage, specialistUsage),
+    routedTo: cls.intents.map((i) => i.name).join(","),
+    routerReasoning: cls.reasoning,
+    routerUsage: cls.usage,
+    specialistUsage,
+    evaluatorAttempts: 1,
+    evaluatorUsage: zeroUsage(),
+    steps,
+  };
+}
+
+async function runChain<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
+  if (opts.evaluate) {
+    throw new Error(
+      "orchestrate: 'evaluate' is not supported with mode=chain — evaluator + chain retry semantics are deferred. Use single mode for evaluator-gated flows.",
+    );
+  }
+
+  const formatter = opts.chainContextFormatter ?? defaultChainFormatter;
+  const maxChars = opts.chainContextChars ?? DEFAULT_CHAIN_CONTEXT_CHARS;
+  const steps: ChainStep[] = [];
+  let specialistUsage: Usage = zeroUsage();
+  let prior: ChainStep | undefined;
+
+  for (const intent of cls.intents) {
+    const chosen = opts.specialists.find((s) => s.name === intent.name);
+    if (!chosen) {
+      throw new ChainDispatchError(
+        `orchestrate: chain step references unknown specialist '${intent.name}'`,
+        { steps, failedAt: intent.name },
+      );
+    }
+    const augmented = formatter(prior, opts.message, maxChars);
+    const messages: Message[] = [
+      ...(opts.history ?? []),
+      { role: "user", content: augmented },
+    ];
+    let result: RunAgentResult;
+    try {
+      result = await runSpecialist({
+        llm: opts.llm,
+        specialist: chosen,
+        defaultModel: opts.specialistModel,
+        messages,
+        services: opts.services,
+        confirm: opts.confirm,
+      });
+    } catch (e) {
+      throw new ChainDispatchError(
+        `orchestrate: chain step '${intent.name}' failed`,
+        { steps, failedAt: intent.name, cause: e },
+      );
+    }
+    specialistUsage = addUsage(specialistUsage, result.usage);
+    const step: ChainStep = { specialist: chosen.name, result };
+    steps.push(step);
+    prior = step;
+  }
+
+  const last = steps[steps.length - 1].result;
+  return {
+    ...last,
+    routedTo: steps[steps.length - 1].specialist,
+    routerReasoning: cls.reasoning,
+    routerUsage: cls.usage,
+    specialistUsage,
+    evaluatorAttempts: 1,
+    evaluatorUsage: zeroUsage(),
+    usage: addUsage(cls.usage, specialistUsage),
+    steps,
   };
 }
 
@@ -210,10 +417,18 @@ export async function* streamOrchestrate<TServices>(
     history: opts.history,
   });
 
-  const chosen =
-    opts.specialists.find((s) => s.name === cls.intent) ?? opts.specialists[0];
+  if (cls.mode === "chain") {
+    throw new Error("streamOrchestrate: chain mode not yet implemented");
+  }
+  if (cls.mode === "parallel") {
+    throw new Error("streamOrchestrate: parallel mode not yet implemented");
+  }
 
-  yield { type: "routed", routedTo: chosen.name, routerRaw: cls.raw };
+  const intent = cls.intents[0];
+  const chosen =
+    opts.specialists.find((s) => s.name === intent.name) ?? opts.specialists[0];
+
+  yield { type: "routed", routedTo: chosen.name, routerReasoning: cls.reasoning };
 
   const agentResult = yield* streamSpecialist({
     llm: opts.llm,
@@ -228,7 +443,7 @@ export async function* streamOrchestrate<TServices>(
   return {
     ...agentResult,
     routedTo: chosen.name,
-    routerRaw: cls.raw,
+    routerReasoning: cls.reasoning,
     routerUsage: cls.usage,
     specialistUsage: agentResult.usage,
     evaluatorAttempts: 1,

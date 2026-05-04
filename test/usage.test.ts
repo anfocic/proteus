@@ -92,7 +92,13 @@ test("streamAgent: agent_done.result.usage equals sum of message_stop usages", a
 });
 
 test("classifyIntent: returns usage from the router LLM call", async () => {
-  const llm = mockProvider([turn([text("weather")], "end_turn", usage(80, 2))]);
+  const llm = mockProvider([
+    turn(
+      [text(JSON.stringify({ intents: ["weather"], mode: "single" }))],
+      "end_turn",
+      usage(80, 2),
+    ),
+  ]);
   const cls = await classifyIntent({
     llm,
     model: "router",
@@ -102,7 +108,8 @@ test("classifyIntent: returns usage from the router LLM call", async () => {
     ],
     message: "what's the temp",
   });
-  assert.equal(cls.intent, "weather");
+  assert.equal(cls.intents[0].name, "weather");
+  assert.equal(cls.mode, "single");
   assert.deepEqual(cls.usage, { inputTokens: 80, outputTokens: 2 });
 });
 
@@ -126,7 +133,7 @@ test("runSpecialist: usage threads through", async () => {
 
 test("orchestrate: routerUsage + specialistUsage + total usage", async () => {
   const llm = mockProvider([
-    turn([text("weather")], "end_turn", usage(50, 3)),       // router
+    turn([text(JSON.stringify({ intents: ["weather"], mode: "single" }))], "end_turn", usage(50, 3)),       // router
     turn([text("sunny")], "end_turn", usage(120, 12)),       // specialist
   ]);
   const spec = createSpecialist({
@@ -151,7 +158,7 @@ test("orchestrate: routerUsage + specialistUsage + total usage", async () => {
 
 test("streamOrchestrate: returned result has router + specialist breakdown", async () => {
   const llm = mockProvider([
-    turn([text("math")], "end_turn", usage(20, 1)),
+    turn([text(JSON.stringify({ intents: ["math"], mode: "single" }))], "end_turn", usage(20, 1)),
     turn([text("4")], "end_turn", usage(30, 5)),
   ]);
   const specs = [
