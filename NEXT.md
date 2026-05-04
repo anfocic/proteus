@@ -1,6 +1,6 @@
 # NEXT — Roadmap
 
-What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, and per-tool `timeoutMs` + `maxResultBytes` defensive caps in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
+What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, per-tool `timeoutMs` + `maxResultBytes` defensive caps, and the evaluator/quality-gate hook on `orchestrate` in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
 
 Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intrebit consumes proteus as a dep", tier 4 if the goal is "OSS portfolio that gets stars".
 
@@ -14,7 +14,6 @@ Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intre
 
 | Item | Sketch | Notes |
 |---|---|---|
-| **Evaluator / response quality gate** | Optional `evaluate(result) => Promise<{ ok, feedback? }>` after specialist returns. On failure, retry the specialist with feedback, bounded. | Cheap-model pass; the difference between demo and product. |
 | **Multi-specialist chain / parallel** | `orchestrate` modes: `chain` (specialist A → B uses A's output), `parallel` (run both, merge). | intrebit already does this. Port aggressively-simplified versions when needed. |
 | **Telegram message-edit streaming** | Edit-throttled streaming (`editMessageText` under the 1 msg/sec rate limit). Buffer deltas for ~500ms, edit. | Ships on top of `streamAgent`. ADR 0004/0005 bracket the design space. |
 
