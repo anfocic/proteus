@@ -59,6 +59,13 @@ export type {
   DispatchMode,
 } from "./agent/router.ts";
 export { tryParseJSON, stripJsonFences } from "./agent/json-repair.ts";
+export {
+  ChainDispatchError,
+  defaultChainFormatter,
+  escapeXmlAngles,
+  DEFAULT_CHAIN_CONTEXT_CHARS,
+} from "./agent/chain.ts";
+export type { ChainContextFormatter, ChainStep } from "./agent/chain.ts";
 export { orchestrate, resumeOrchestrate, streamOrchestrate } from "./agent/orchestrate.ts";
 export type {
   EvaluatorFn,

@@ -1,7 +1,7 @@
 import type { LLMProvider } from "../llm/provider.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
-import type { DispatchMode } from "./router.ts";
+import type { Classification } from "./router.ts";
 import {
   addUsage,
   zeroUsage,
@@ -15,6 +15,13 @@ import {
   streamSpecialist,
   type Specialist,
 } from "./specialist.ts";
+import {
+  ChainDispatchError,
+  DEFAULT_CHAIN_CONTEXT_CHARS,
+  defaultChainFormatter,
+  type ChainContextFormatter,
+  type ChainStep,
+} from "./chain.ts";
 
 export interface EvaluatorInput {
   finalText: string;
@@ -56,15 +63,23 @@ export interface OrchestrateOpts<TServices> {
    * appended as a user message, bounded by `maxEvaluatorAttempts`. Caller
    * writes the LLM call (or heuristic) — no built-in evaluator. Reports its
    * own LLM cost via `usage` on the verdict.
+   *
+   * Single mode only — set on `mode: "chain"` throws.
    */
   evaluate?: EvaluatorFn;
   /**
    * Max specialist attempts when an evaluator is set. Default 2 (= 1 retry).
-   * 1 = evaluate-only (no retry, useful for telemetry). Ignored if `evaluate`
-   * is undefined. At cap with `ok: false`, the last result is returned
-   * without throwing — caller can detect via `evaluatorAttempts === maxEvaluatorAttempts`.
    */
   maxEvaluatorAttempts?: number;
+  /**
+   * Chain mode only. Max characters of the prior step's `finalText` carried
+   * into the next step's user message. Default 2000 (intrebit's value).
+   */
+  chainContextChars?: number;
+  /**
+   * Chain mode only. Override the default `<previous_step_output>...` formatter.
+   */
+  chainContextFormatter?: ChainContextFormatter;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
@@ -75,6 +90,11 @@ export interface OrchestrateResult extends RunAgentResult {
   specialistUsage: Usage;
   evaluatorAttempts: number;
   evaluatorUsage: Usage;
+  /**
+   * Populated for `mode: "chain"` with one entry per executed step.
+   * Undefined for single mode (zero-overhead default).
+   */
+  steps?: ChainStep[];
 }
 
 export interface ResumeOrchestrateOpts<TServices> {
@@ -138,13 +158,20 @@ export async function orchestrate<TServices>(
     history: opts.history,
   });
 
-  if (cls.mode === "chain") {
-    throw new Error("orchestrate: chain mode not yet implemented");
+  switch (cls.mode) {
+    case "single":
+      return runSingle(opts, cls);
+    case "chain":
+      return runChain(opts, cls);
+    case "parallel":
+      throw new Error("orchestrate: parallel mode not yet implemented");
   }
-  if (cls.mode === "parallel") {
-    throw new Error("orchestrate: parallel mode not yet implemented");
-  }
+}
 
+async function runSingle<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
   const intent = cls.intents[0];
   const chosen =
     opts.specialists.find((s) => s.name === intent.name) ?? opts.specialists[0];
@@ -198,6 +225,71 @@ export async function orchestrate<TServices>(
     evaluatorAttempts: attempts,
     evaluatorUsage,
     usage: addUsage(addUsage(cls.usage, specialistUsage), evaluatorUsage),
+  };
+}
+
+async function runChain<TServices>(
+  opts: OrchestrateOpts<TServices>,
+  cls: Classification,
+): Promise<OrchestrateResult> {
+  if (opts.evaluate) {
+    throw new Error(
+      "orchestrate: 'evaluate' is not supported with mode=chain — evaluator + chain retry semantics are deferred. Use single mode for evaluator-gated flows.",
+    );
+  }
+
+  const formatter = opts.chainContextFormatter ?? defaultChainFormatter;
+  const maxChars = opts.chainContextChars ?? DEFAULT_CHAIN_CONTEXT_CHARS;
+  const steps: ChainStep[] = [];
+  let specialistUsage: Usage = zeroUsage();
+  let prior: ChainStep | undefined;
+
+  for (const intent of cls.intents) {
+    const chosen = opts.specialists.find((s) => s.name === intent.name);
+    if (!chosen) {
+      throw new ChainDispatchError(
+        `orchestrate: chain step references unknown specialist '${intent.name}'`,
+        { steps, failedAt: intent.name },
+      );
+    }
+    const augmented = formatter(prior, opts.message, maxChars);
+    const messages: Message[] = [
+      ...(opts.history ?? []),
+      { role: "user", content: augmented },
+    ];
+    let result: RunAgentResult;
+    try {
+      result = await runSpecialist({
+        llm: opts.llm,
+        specialist: chosen,
+        defaultModel: opts.specialistModel,
+        messages,
+        services: opts.services,
+        confirm: opts.confirm,
+      });
+    } catch (e) {
+      throw new ChainDispatchError(
+        `orchestrate: chain step '${intent.name}' failed`,
+        { steps, failedAt: intent.name, cause: e },
+      );
+    }
+    specialistUsage = addUsage(specialistUsage, result.usage);
+    const step: ChainStep = { specialist: chosen.name, result };
+    steps.push(step);
+    prior = step;
+  }
+
+  const last = steps[steps.length - 1].result;
+  return {
+    ...last,
+    routedTo: steps[steps.length - 1].specialist,
+    routerReasoning: cls.reasoning,
+    routerUsage: cls.usage,
+    specialistUsage,
+    evaluatorAttempts: 1,
+    evaluatorUsage: zeroUsage(),
+    usage: addUsage(cls.usage, specialistUsage),
+    steps,
   };
 }
 
