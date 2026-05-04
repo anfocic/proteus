@@ -8,6 +8,7 @@ import type {
   Usage,
 } from "../llm/types.ts";
 import type { ToolContext } from "./context.ts";
+import { mapLimit } from "./concurrency.ts";
 
 export interface ToolDef<TInput = unknown, TServices = Record<string, unknown>> extends ToolSchema {
   handler: (input: TInput, ctx: ToolContext<TServices>) => Promise<string> | string;
@@ -40,6 +41,15 @@ export interface RunAgentInput<TServices = Record<string, unknown>> {
   maxTokens?: number;
   temperature?: number;
   cacheSystemPrompt?: boolean;
+  /**
+   * Cap on concurrent tool-handler executions within a single turn. When the
+   * model emits a batch of `tool_use` blocks, handlers run with at most this
+   * many in flight at once. Ordering of `tool_result` messages is preserved.
+   *
+   * Confirmation gates remain serialized regardless of this cap (one prompt
+   * at a time). Undefined or <= 0 → unbounded (existing behavior).
+   */
+  toolConcurrency?: number;
 }
 
 export type RunAgentStopReason =
@@ -209,6 +219,7 @@ async function dispatchTurn(
   ctx: ToolContext<unknown>,
   confirm: ConfirmCallback | undefined,
   seed: Record<string, ToolResultRecord> = {},
+  toolConcurrency?: number,
 ): Promise<TurnDispatchResult> {
   const decided: Record<string, ToolResultRecord> = { ...seed };
   type GateOutcome =
@@ -268,8 +279,8 @@ async function dispatchTurn(
     }
   }
 
-  const results = await Promise.all(
-    outcomes.map((o) => (o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx))),
+  const results = await mapLimit(outcomes, toolConcurrency, (o) =>
+    o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx),
   );
   return { kind: "complete", toolResults: results };
 }
@@ -352,7 +363,14 @@ async function loop<TServices>(
       };
     }
 
-    const dispatch = await dispatchTurn(toolUses, state.tools, state.ctx, state.input.confirm);
+    const dispatch = await dispatchTurn(
+      toolUses,
+      state.tools,
+      state.ctx,
+      state.input.confirm,
+      undefined,
+      state.input.toolConcurrency,
+    );
     if (dispatch.kind === "pending") {
       messages.pop();
       return {
@@ -427,7 +445,14 @@ export async function resumeAgent<TServices = Record<string, unknown>>(
     seed[tu.id] = await runHandler(tu, state.tools, state.ctx);
   }
 
-  const dispatch = await dispatchTurn(toolUses, state.tools, state.ctx, input.confirm, seed);
+  const dispatch = await dispatchTurn(
+    toolUses,
+    state.tools,
+    state.ctx,
+    input.confirm,
+    seed,
+    input.toolConcurrency,
+  );
   const messagesWithTurn = [...suspended.messages, { role: "assistant" as const, content: suspended.turnContent }];
 
   if (dispatch.kind === "pending") {
@@ -613,10 +638,8 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
       }
     }
 
-    const results = await Promise.all(
-      outcomes.map((o) =>
-        o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, state.tools, state.ctx),
-      ),
+    const results = await mapLimit(outcomes, input.toolConcurrency, (o) =>
+      o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, state.tools, state.ctx),
     );
 
     for (const r of results) {
