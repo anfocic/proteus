@@ -88,10 +88,20 @@ export interface RunAgentResult {
 export const zeroUsage = (): Usage => ({ inputTokens: 0, outputTokens: 0 });
 
 export function addUsage(a: Usage, b: Usage): Usage {
-  return {
+  const out: Usage = {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
   };
+  const cc = sumOptional(a.cacheCreationInputTokens, b.cacheCreationInputTokens);
+  if (cc !== undefined) out.cacheCreationInputTokens = cc;
+  const cr = sumOptional(a.cacheReadInputTokens, b.cacheReadInputTokens);
+  if (cr !== undefined) out.cacheReadInputTokens = cr;
+  return out;
+}
+
+function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  return (a ?? 0) + (b ?? 0);
 }
 
 export interface ResumeDecision {

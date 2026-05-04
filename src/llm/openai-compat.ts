@@ -59,7 +59,13 @@ interface ChatResponse {
       }>;
     };
   }>;
-  usage?: { prompt_tokens: number; completion_tokens: number };
+  usage?: OpenAIUsage;
+}
+
+interface OpenAIUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export function openaiCompat(opts: {
@@ -137,10 +143,7 @@ export function openaiCompat(opts: {
         id: data.id,
         content,
         stopReason: mapFinishReason(choice.finish_reason),
-        usage: {
-          inputTokens: data.usage?.prompt_tokens ?? 0,
-          outputTokens: data.usage?.completion_tokens ?? 0,
-        },
+        usage: openaiUsage(data.usage),
         raw: data,
       };
     },
@@ -252,7 +255,11 @@ interface OpenAIStreamChoice {
 interface OpenAIStreamChunk {
   id?: string;
   choices?: OpenAIStreamChoice[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }
 
 interface ToolAccum {
@@ -295,6 +302,8 @@ export async function* streamFromOpenAISSE(
     if (chunk.usage) {
       usage.inputTokens = chunk.usage.prompt_tokens ?? usage.inputTokens;
       usage.outputTokens = chunk.usage.completion_tokens ?? usage.outputTokens;
+      const cached = chunk.usage.prompt_tokens_details?.cached_tokens;
+      if (cached !== undefined) usage.cacheReadInputTokens = cached;
     }
 
     const choice = chunk.choices?.[0];
@@ -404,6 +413,16 @@ export async function* streamFromOpenAISSE(
       return;
     }
   }
+}
+
+function openaiUsage(u: OpenAIUsage | undefined): Usage {
+  const out: Usage = {
+    inputTokens: u?.prompt_tokens ?? 0,
+    outputTokens: u?.completion_tokens ?? 0,
+  };
+  const cached = u?.prompt_tokens_details?.cached_tokens;
+  if (cached !== undefined) out.cacheReadInputTokens = cached;
+  return out;
 }
 
 function toOpenAIMessages(msg: Message): ChatMessage[] {
