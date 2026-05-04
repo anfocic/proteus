@@ -1,14 +1,12 @@
 # NEXT — Roadmap
 
-What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, per-tool `timeoutMs` + `maxResultBytes` defensive caps, and the evaluator/quality-gate hook on `orchestrate` in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
+What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, per-tool `timeoutMs` + `maxResultBytes` defensive caps, the evaluator/quality-gate hook on `orchestrate`, and Anthropic prompt-caching hints (`cacheSystemPrompt` + `ToolSchema.cacheBreakpoint` + `Specialist.cacheRole`) in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
 
 Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intrebit consumes proteus as a dep", tier 4 if the goal is "OSS portfolio that gets stars".
 
 ## Tier 1 — Real consumers hit these immediately
 
-| Item | Sketch | Notes |
-|---|---|---|
-| **Cache breakpoint hints (Anthropic prompt caching)** | `cacheBreakpoint?: boolean` on system prompt and tool defs. Adapter emits `cache_control: { type: "ephemeral" }`. OpenAI-compat ignores. | ~75% cost saving on repeat-system flows. CRM agents have huge static system prompts — this matters. |
+_All Tier 1 items shipped._
 
 ## Tier 2 — Bites once you have N specialists or real users
 

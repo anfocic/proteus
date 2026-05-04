@@ -7,6 +7,12 @@ export interface CompletionRequest {
   maxTokens?: number;
   temperature?: number;
   providerOptions?: Record<string, unknown>;
+  /**
+   * When true, the Anthropic adapter emits the system prompt in structured
+   * form with `cache_control: { type: "ephemeral" }`. Ignored by the
+   * OpenAI-compat adapter (Anthropic-only feature). ADR 0010.
+   */
+  cacheSystemPrompt?: boolean;
 }
 
 export interface CompletionResponse {
@@ -38,6 +44,12 @@ export interface ToolSchema {
   name: string;
   description: string;
   inputSchema: unknown;
+  /**
+   * When true, the Anthropic adapter emits this tool with
+   * `cache_control: { type: "ephemeral" }`. Ignored by the OpenAI-compat
+   * adapter. ADR 0010.
+   */
+  cacheBreakpoint?: boolean;
 }
 
 export type StreamEvent =

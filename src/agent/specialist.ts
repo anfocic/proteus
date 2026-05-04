@@ -18,6 +18,13 @@ export interface Specialist<TServices = Record<string, unknown>> {
   role: string;
   tools: ToolDef<unknown, TServices>[];
   model?: string;
+  /**
+   * When true, the specialist's `role` is sent to the Anthropic adapter
+   * with `cache_control: { type: "ephemeral" }`. Static specialist roles
+   * are the canonical caching win — flip this on per-specialist when the
+   * role is large and reused. Ignored on OpenAI-compat. ADR 0010.
+   */
+  cacheRole?: boolean;
 }
 
 export function createSpecialist<TServices>(
@@ -45,6 +52,7 @@ export async function runSpecialist<TServices>(
     llm: opts.llm,
     model: opts.specialist.model ?? opts.defaultModel,
     system: opts.specialist.role,
+    cacheSystemPrompt: opts.specialist.cacheRole,
     tools: opts.specialist.tools,
     messages: opts.messages,
     services: opts.services,
@@ -75,6 +83,7 @@ export async function resumeSpecialist<TServices>(
     llm: opts.llm,
     model: opts.specialist.model ?? opts.defaultModel,
     system: opts.specialist.role,
+    cacheSystemPrompt: opts.specialist.cacheRole,
     tools: opts.specialist.tools,
     services: opts.services,
     suspended: opts.suspended,
@@ -93,6 +102,7 @@ export async function* streamSpecialist<TServices>(
     llm: opts.llm,
     model: opts.specialist.model ?? opts.defaultModel,
     system: opts.specialist.role,
+    cacheSystemPrompt: opts.specialist.cacheRole,
     tools: opts.specialist.tools,
     messages: opts.messages,
     services: opts.services,
