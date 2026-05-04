@@ -69,6 +69,10 @@ export function openaiCompat(opts: {
 }): LLMProvider {
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, "");
 
+  // Note: `req.cacheSystemPrompt` and `tool.cacheBreakpoint` are deliberately
+  // ignored here — they are Anthropic-only hints (ADR 0010). OpenAI-shape hosts
+  // either don't expose explicit caching, or expose it via host-specific fields
+  // that don't fit the normalized request. Silent ignore is intentional.
   return {
     async complete(req: CompletionRequest): Promise<CompletionResponse> {
       const messages: ChatMessage[] = [];

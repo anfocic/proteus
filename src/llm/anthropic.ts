@@ -51,13 +51,9 @@ export function anthropic(opts: {
       const body = {
         model: req.model || opts.defaultModel || "claude-sonnet-4-5",
         max_tokens: req.maxTokens ?? 1024,
-        system: req.system,
+        system: encodeSystem(req.system, req.cacheSystemPrompt),
         messages: req.messages.map(toAnthropicMessage),
-        tools: req.tools?.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.inputSchema,
-        })),
+        tools: req.tools?.map(encodeTool),
         tool_choice: req.toolChoice,
         temperature: req.temperature,
       };
@@ -100,13 +96,9 @@ export function anthropic(opts: {
       const body = {
         model: req.model || opts.defaultModel || "claude-sonnet-4-5",
         max_tokens: req.maxTokens ?? 1024,
-        system: req.system,
+        system: encodeSystem(req.system, req.cacheSystemPrompt),
         messages: req.messages.map(toAnthropicMessage),
-        tools: req.tools?.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.inputSchema,
-        })),
+        tools: req.tools?.map(encodeTool),
         tool_choice: req.toolChoice,
         temperature: req.temperature,
         stream: true,
@@ -361,5 +353,24 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) (out as Record<string, unknown>)[k] = v;
   }
+  return out;
+}
+
+function encodeSystem(
+  system: string | undefined,
+  cache: boolean | undefined,
+): string | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | undefined {
+  if (system === undefined) return undefined;
+  if (!cache) return system;
+  return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+}
+
+function encodeTool(t: { name: string; description: string; inputSchema: unknown; cacheBreakpoint?: boolean }) {
+  const out: Record<string, unknown> = {
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema,
+  };
+  if (t.cacheBreakpoint) out.cache_control = { type: "ephemeral" };
   return out;
 }

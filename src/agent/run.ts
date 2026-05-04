@@ -39,6 +39,7 @@ export interface RunAgentInput<TServices = Record<string, unknown>> {
   maxIterations?: number;
   maxTokens?: number;
   temperature?: number;
+  cacheSystemPrompt?: boolean;
 }
 
 export type RunAgentStopReason =
@@ -275,11 +276,12 @@ function setup<TServices>(input: Omit<RunAgentInput<TServices>, "messages">): Ag
   const tools: ToolMap = new Map(
     input.tools.map((t) => [t.name, t as ToolDef<unknown, unknown>]),
   );
-  const toolSchemas: ToolSchema[] = input.tools.map(({ name, description, inputSchema }) => ({
-    name,
-    description,
-    inputSchema,
-  }));
+  const toolSchemas: ToolSchema[] = input.tools.map(
+    ({ name, description, inputSchema, cacheBreakpoint }) =>
+      cacheBreakpoint
+        ? { name, description, inputSchema, cacheBreakpoint }
+        : { name, description, inputSchema },
+  );
   const ctx: ToolContext<unknown> = {
     services: (input.services ?? {}) as unknown,
   };
@@ -312,6 +314,7 @@ async function loop<TServices>(
       tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
       maxTokens: state.input.maxTokens,
       temperature: state.input.temperature,
+      cacheSystemPrompt: state.input.cacheSystemPrompt,
     });
 
     usage = addUsage(usage, res.usage);
@@ -478,6 +481,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
         maxTokens: input.maxTokens,
         temperature: input.temperature,
+        cacheSystemPrompt: input.cacheSystemPrompt,
       },
       input.signal ? { signal: input.signal } : undefined,
     )) {
