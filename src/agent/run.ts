@@ -13,6 +13,8 @@ export interface ToolDef<TInput = unknown, TServices = Record<string, unknown>> 
   handler: (input: TInput, ctx: ToolContext<TServices>) => Promise<string> | string;
   requiresConfirmation?: boolean;
   summarize?: (input: TInput) => string;
+  timeoutMs?: number;
+  maxResultBytes?: number;
 }
 
 export interface ConfirmRequest {
@@ -123,6 +125,37 @@ function declinedResult(tu: ToolUseBlock, summary: string): ToolResultRecord {
   };
 }
 
+class ToolTimeoutError extends Error {
+  constructor() {
+    super("tool timeout");
+    this.name = "ToolTimeoutError";
+  }
+}
+
+function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new ToolTimeoutError()), ms);
+    p.then(
+      (v) => {
+        clearTimeout(id);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(id);
+        reject(e);
+      },
+    );
+  });
+}
+
+function applyCap(s: string, maxBytes: number | undefined): string {
+  if (maxBytes === undefined) return s;
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length <= maxBytes) return s;
+  const head = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes));
+  return `${head}\n\n[TRUNCATED: ${maxBytes} of ${bytes.length} bytes]`;
+}
+
 async function runHandler(
   tu: ToolUseBlock,
   tools: ToolMap,
@@ -133,9 +166,20 @@ async function runHandler(
     return { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true };
   }
   try {
-    const out = await tool.handler(tu.input, ctx);
-    return { toolUseId: tu.id, content: out, isError: false };
+    const handlerPromise = Promise.resolve(tool.handler(tu.input, ctx));
+    const out =
+      tool.timeoutMs !== undefined
+        ? await raceWithTimeout(handlerPromise, tool.timeoutMs)
+        : await handlerPromise;
+    return { toolUseId: tu.id, content: applyCap(out, tool.maxResultBytes), isError: false };
   } catch (err) {
+    if (err instanceof ToolTimeoutError) {
+      return {
+        toolUseId: tu.id,
+        content: `[TIMEOUT] Tool exceeded ${tool.timeoutMs}ms`,
+        isError: true,
+      };
+    }
     return {
       toolUseId: tu.id,
       content: err instanceof Error ? err.message : String(err),
