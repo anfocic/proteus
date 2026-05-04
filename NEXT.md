@@ -1,6 +1,6 @@
 # NEXT — Roadmap
 
-What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, and HTTP suspend/resume for the confirm gate in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
+What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, and per-tool `timeoutMs` + `maxResultBytes` defensive caps in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
 
 Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intrebit consumes proteus as a dep", tier 4 if the goal is "OSS portfolio that gets stars".
 
@@ -16,9 +16,7 @@ Tiers reflect impact, not difficulty. Pick by goal: tier 1 if the goal is "intre
 |---|---|---|
 | **Evaluator / response quality gate** | Optional `evaluate(result) => Promise<{ ok, feedback? }>` after specialist returns. On failure, retry the specialist with feedback, bounded. | Cheap-model pass; the difference between demo and product. |
 | **Multi-specialist chain / parallel** | `orchestrate` modes: `chain` (specialist A → B uses A's output), `parallel` (run both, merge). | intrebit already does this. Port aggressively-simplified versions when needed. |
-| **Tool result truncation / size limits** | Default cap (e.g. 32 KB) on tool handler return value; per-tool override. Truncate with a marker the model can recognize. | A 2 MB tool return crashes the next LLM call. |
 | **Telegram message-edit streaming** | Edit-throttled streaming (`editMessageText` under the 1 msg/sec rate limit). Buffer deltas for ~500ms, edit. | Ships on top of `streamAgent`. ADR 0004/0005 bracket the design space. |
-| **Per-tool timeouts** | `timeoutMs?: number` on `ToolDef`. Wrap handler in `Promise.race`. On timeout, return `[TIMEOUT]`-prefixed error (mirrors `[DECLINED]`). | Prevents hung handlers from killing the loop. |
 
 ## Tier 3 — Infrastructure, not framework
 
