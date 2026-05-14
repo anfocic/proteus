@@ -54,7 +54,7 @@ export function anthropic(opts: {
   const baseURL = opts.baseURL ?? DEFAULT_BASE_URL;
 
   return {
-    async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    async complete(req: CompletionRequest, completeOpts): Promise<CompletionResponse> {
       const body = {
         model: req.model || opts.defaultModel || "claude-sonnet-4-5",
         max_tokens: req.maxTokens ?? 1024,
@@ -73,6 +73,7 @@ export function anthropic(opts: {
           "anthropic-version": ANTHROPIC_VERSION,
         },
         body: JSON.stringify(stripUndefined(body)),
+        signal: completeOpts?.signal,
       });
 
       if (!res.ok) {

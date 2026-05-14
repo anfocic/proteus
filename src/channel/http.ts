@@ -132,13 +132,17 @@ export function createChatHandler<TServices>(
       maxEvaluatorAttempts: config.maxEvaluatorAttempts,
     });
 
-    await config.store.append(req.sessionId, [{ role: "user", content: req.message }]);
-
-    if (result.suspended && config.pendingStore) {
+    if (result.suspended) {
+      if (!config.pendingStore) {
+        throw new Error(
+          "orchestrate suspended but no pendingStore is configured — set pendingStore to enable HTTP suspend/resume",
+        );
+      }
       await config.pendingStore.set(req.sessionId, {
         routedTo: result.routedTo,
         suspended: result.suspended,
       });
+      await config.store.append(req.sessionId, [{ role: "user", content: req.message }]);
       const p = result.suspended.pending;
       return {
         kind: "pending",
@@ -149,7 +153,10 @@ export function createChatHandler<TServices>(
       };
     }
 
+    // Persist the user/assistant pair in a single append so a concurrent
+    // request for the same session can't interleave between the two writes.
     await config.store.append(req.sessionId, [
+      { role: "user", content: req.message },
       { role: "assistant", content: [{ type: "text", text: result.finalText }] },
     ]);
 

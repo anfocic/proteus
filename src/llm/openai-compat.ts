@@ -80,7 +80,7 @@ export function openaiCompat(opts: {
   // either don't expose explicit caching, or expose it via host-specific fields
   // that don't fit the normalized request. Silent ignore is intentional.
   return {
-    async complete(req: CompletionRequest): Promise<CompletionResponse> {
+    async complete(req: CompletionRequest, completeOpts): Promise<CompletionResponse> {
       const messages: ChatMessage[] = [];
       if (req.system) messages.push({ role: "system", content: req.system });
       for (const m of req.messages) messages.push(...toOpenAIMessages(m));
@@ -110,6 +110,7 @@ export function openaiCompat(opts: {
           authorization: `Bearer ${opts.apiKey}`,
         },
         body: JSON.stringify(stripUndefined(body as unknown as Record<string, unknown>)),
+        signal: completeOpts?.signal,
       });
 
       if (!res.ok) {

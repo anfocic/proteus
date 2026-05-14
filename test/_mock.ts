@@ -18,8 +18,11 @@ export function mockProvider(turns: CompletionResponse[]): MockProvider {
   let i = 0;
   return {
     calls,
-    async complete(req) {
+    async complete(req, opts) {
       calls.push(req);
+      if (opts?.signal?.aborted) {
+        throw opts.signal.reason ?? new DOMException("aborted", "AbortError");
+      }
       const res = turns[i] ?? turns[turns.length - 1];
       i++;
       return res;

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { ChatHandler } from "./http.ts";
 
 const DEFAULT_BASE_URL = "https://api.telegram.org";
@@ -51,7 +52,19 @@ function truncate(text: string): string {
   return text.slice(0, MAX_TEXT - TRUNC_SUFFIX.length) + TRUNC_SUFFIX;
 }
 
+function constantTimeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 function reportError(deps: TelegramDeps, err: unknown, update?: TelegramUpdate): void {
+  // The bot token sits in every API URL; Node's fetch-rejection errors can
+  // echo the URL back in their message. Redact before it reaches a logger.
+  if (deps.token && err instanceof Error && err.message.includes(deps.token)) {
+    err.message = err.message.replaceAll(deps.token, "<token>");
+  }
   const onError = deps.onError ?? ((e) => console.error("[telegram]", e));
   try {
     onError(err, { update });
@@ -147,7 +160,9 @@ export function createWebhookHandler(
   return async (req) => {
     if (opts.secretToken) {
       const got = readHeader(req.headers, "x-telegram-bot-api-secret-token");
-      if (got !== opts.secretToken) return { status: 401 };
+      if (got === undefined || !constantTimeEqual(got, opts.secretToken)) {
+        return { status: 401 };
+      }
     }
     let update: TelegramUpdate;
     try {

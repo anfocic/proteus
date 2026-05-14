@@ -3,6 +3,11 @@ export interface SSERecord {
   data: string;
 }
 
+// A single SSE record this large without a delimiter means the host is
+// streaming garbage (or never terminating a record). Bail rather than let
+// `buf` grow unbounded. Real records are KB-scale; 4 MiB is generous.
+const MAX_BUFFER_CHARS = 4 * 1024 * 1024;
+
 export async function* parseSSE(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
@@ -20,6 +25,12 @@ export async function* parseSSE(
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+
+      if (buf.length > MAX_BUFFER_CHARS) {
+        throw new Error(
+          `SSE buffer exceeded ${MAX_BUFFER_CHARS} chars without a record delimiter`,
+        );
+      }
 
       let sep: number;
       while ((sep = indexOfDelim(buf)) !== -1) {

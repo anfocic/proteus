@@ -108,6 +108,10 @@ export function withRetry(llm: LLMProvider, opts: RetryOpts = {}): LLMProvider {
           yield next.value;
         }
       } catch (err) {
+        // The failed generator is abandoned here — close it so any open
+        // connection/reader from a pre-yield failure is released before the
+        // next attempt opens a new one.
+        await iter.return?.(undefined).catch(() => {});
         if (yielded || !isRetryable(err) || attempt >= o.maxAttempts) throw err;
         const delayMs = computeDelay(err, attempt, o);
         o.onRetry?.({ error: err, attempt, delayMs });
