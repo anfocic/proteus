@@ -42,6 +42,12 @@ export interface RunAgentInput<TServices = Record<string, unknown>> {
   temperature?: number;
   cacheSystemPrompt?: boolean;
   /**
+   * Forwarded to `llm.complete()` / `llm.stream()`. Aborting cancels the
+   * in-flight provider call; the rejection (a `DOMException` named
+   * `AbortError`) propagates out of `runAgent` / `streamAgent` unwrapped.
+   */
+  signal?: AbortSignal;
+  /**
    * Cap on concurrent tool-handler executions within a single turn. When the
    * model emits a batch of `tool_use` blocks, handlers run with at most this
    * many in flight at once. Ordering of `tool_result` messages is preserved.
@@ -328,15 +334,18 @@ async function loop<TServices>(
   while (iterations < state.maxIterations) {
     iterations++;
 
-    const res = await state.input.llm.complete({
-      model: state.input.model,
-      system: state.input.system,
-      messages,
-      tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
-      maxTokens: state.input.maxTokens,
-      temperature: state.input.temperature,
-      cacheSystemPrompt: state.input.cacheSystemPrompt,
-    });
+    const res = await state.input.llm.complete(
+      {
+        model: state.input.model,
+        system: state.input.system,
+        messages,
+        tools: state.toolSchemas.length > 0 ? state.toolSchemas : undefined,
+        maxTokens: state.input.maxTokens,
+        temperature: state.input.temperature,
+        cacheSystemPrompt: state.input.cacheSystemPrompt,
+      },
+      state.input.signal ? { signal: state.input.signal } : undefined,
+    );
 
     usage = addUsage(usage, res.usage);
     messages.push({ role: "assistant", content: res.content });
@@ -494,7 +503,7 @@ export type AgentEvent =
   | { type: "agent_done"; result: RunAgentResult };
 
 export async function* streamAgent<TServices = Record<string, unknown>>(
-  input: RunAgentInput<TServices> & { signal?: AbortSignal },
+  input: RunAgentInput<TServices>,
 ): AsyncGenerator<AgentEvent, RunAgentResult, void> {
   const state = setup(input);
   const messages: Message[] = [...input.messages];
@@ -613,15 +622,6 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
     }
 
     if (pendingHit) {
-      messages.pop();
-      const result: RunAgentResult = {
-        messages,
-        finalText: "",
-        iterations,
-        stopReason: "error",
-        usage,
-      };
-      yield { type: "agent_done", result };
       throw new Error(
         "streamAgent does not support 'pending' confirm decisions — use runAgent + resumeAgent for suspend/resume",
       );

@@ -57,6 +57,8 @@ Both live in `src/llm/`. Both are thin (~80–130 lines): translate request, `fe
 
 Bounded by `maxIterations` (default 5). No confirmation gate, no concurrency limit, no formatGuide — those are all things to *grow into* if/when the abstraction proves out, not things to retrofit prematurely.
 
+`RunAgentInput.signal?: AbortSignal` forwards to `llm.complete()` / `llm.stream()` (the provider interface's `complete` takes an optional `{ signal }` second arg, mirroring `stream`). Aborting cancels the in-flight provider call; the `AbortError` `DOMException` propagates out unwrapped, consistent with the adapter error contract.
+
 `RunAgentResult.usage: Usage` reports cumulative `{ inputTokens, outputTokens }` summed across every iteration's `complete()` (or `message_stop` event for `streamAgent`). `Classification.usage` carries the single router-call cost. `OrchestrateResult` adds `routerUsage` + `specialistUsage` and the inherited `usage` is the sum — cheap to wire metering on top, no double-accounting. `addUsage` / `zeroUsage` are exported helpers. Cost mapping is left to the consumer (per-model rate tables are user-space).
 
 **Tool concurrency.** `RunAgentInput.toolConcurrency?: number` caps how many `tool_use` handlers run in parallel within a single turn (forwarded through `RunSpecialistOpts` and `OrchestrateOpts`). Confirmation gates remain serialized regardless. Default unbounded (existing `Promise.all` behavior). The tiny `mapLimit` helper (`src/agent/concurrency.ts`) is exported for direct use.
