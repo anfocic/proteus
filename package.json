@@ -15,6 +15,7 @@
   "files": ["dist", "src"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "demo": "node --env-file-if-exists=.env --import tsx demo/weather.ts",
     "demo:multi": "node --env-file-if-exists=.env --import tsx demo/multi-tool.ts",
     "demo:triage": "node --env-file-if-exists=.env --import tsx demo/triage.ts",
