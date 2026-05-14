@@ -8,13 +8,9 @@ import type {
   StreamEvent,
   Usage,
 } from "./types.ts";
-import { parseSSE, type SSERecord } from "./sse.ts";
-import {
-  errorFromResponse,
-  isAbortError,
-  LLMStreamError,
-  LLMTransportError,
-} from "./errors.ts";
+import type { SSERecord } from "./sse.ts";
+import { errorFromResponse } from "./errors.ts";
+import { runProviderStream, stripUndefined } from "./internal.ts";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -52,27 +48,29 @@ export function anthropic(opts: {
   defaultModel?: string;
 }): LLMProvider {
   const baseURL = opts.baseURL ?? DEFAULT_BASE_URL;
+  const url = `${baseURL}/v1/messages`;
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": opts.apiKey,
+    "anthropic-version": ANTHROPIC_VERSION,
+  };
+
+  const buildBody = (req: CompletionRequest) => ({
+    model: req.model || opts.defaultModel || "claude-sonnet-4-5",
+    max_tokens: req.maxTokens ?? 1024,
+    system: encodeSystem(req.system, req.cacheSystemPrompt),
+    messages: req.messages.map(toAnthropicMessage),
+    tools: req.tools?.map(encodeTool),
+    tool_choice: req.toolChoice,
+    temperature: req.temperature,
+  });
 
   return {
     async complete(req: CompletionRequest, completeOpts): Promise<CompletionResponse> {
-      const body = {
-        model: req.model || opts.defaultModel || "claude-sonnet-4-5",
-        max_tokens: req.maxTokens ?? 1024,
-        system: encodeSystem(req.system, req.cacheSystemPrompt),
-        messages: req.messages.map(toAnthropicMessage),
-        tools: req.tools?.map(encodeTool),
-        tool_choice: req.toolChoice,
-        temperature: req.temperature,
-      };
-
-      const res = await fetch(`${baseURL}/v1/messages`, {
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": opts.apiKey,
-          "anthropic-version": ANTHROPIC_VERSION,
-        },
-        body: JSON.stringify(stripUndefined(body)),
+        headers,
+        body: JSON.stringify(stripUndefined(buildBody(req))),
         signal: completeOpts?.signal,
       });
 
@@ -92,79 +90,16 @@ export function anthropic(opts: {
       };
     },
 
-    async *stream(req, streamOpts) {
-      const signal = streamOpts?.signal;
-      if (signal?.aborted) {
-        throw signal.reason ?? new DOMException("aborted", "AbortError");
-      }
-
-      const body = {
-        model: req.model || opts.defaultModel || "claude-sonnet-4-5",
-        max_tokens: req.maxTokens ?? 1024,
-        system: encodeSystem(req.system, req.cacheSystemPrompt),
-        messages: req.messages.map(toAnthropicMessage),
-        tools: req.tools?.map(encodeTool),
-        tool_choice: req.toolChoice,
-        temperature: req.temperature,
-        stream: true,
-      };
-
-      const ctrl = new AbortController();
-      const onAbort = () => ctrl.abort(signal?.reason);
-      signal?.addEventListener("abort", onAbort, { once: true });
-
-      let res: Response;
-      try {
-        res = await fetch(`${baseURL}/v1/messages`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-api-key": opts.apiKey,
-            "anthropic-version": ANTHROPIC_VERSION,
-          },
-          body: JSON.stringify(stripUndefined(body)),
-          signal: ctrl.signal,
-        });
-      } catch (e) {
-        signal?.removeEventListener("abort", onAbort);
-        if (isAbortError(e)) throw e;
-        throw new LLMTransportError({
-          provider: "anthropic",
-          message: "Anthropic stream: transport failure during request",
-          phase: "stream",
-          cause: e,
-        });
-      }
-
-      if (!res.ok) {
-        const text = await res.text();
-        signal?.removeEventListener("abort", onAbort);
-        throw errorFromResponse("anthropic", res, text, "stream");
-      }
-      if (!res.body) {
-        signal?.removeEventListener("abort", onAbort);
-        throw new LLMStreamError({
-          provider: "anthropic",
-          message: "Anthropic stream: response has no body",
-          phase: "stream",
-        });
-      }
-
-      try {
-        yield* streamFromAnthropicSSE(parseSSE(res.body, ctrl.signal));
-      } catch (e) {
-        if (isAbortError(e)) throw e;
-        if (e instanceof LLMTransportError || e instanceof LLMStreamError) throw e;
-        throw new LLMTransportError({
-          provider: "anthropic",
-          message: "Anthropic stream: transport failure mid-stream",
-          phase: "stream",
-          cause: e,
-        });
-      } finally {
-        ctrl.abort();
-        signal?.removeEventListener("abort", onAbort);
-      }
+    stream(req, streamOpts) {
+      return runProviderStream({
+        provider: "anthropic",
+        label: "Anthropic",
+        url,
+        headers,
+        body: stripUndefined({ ...buildBody(req), stream: true }),
+        signal: streamOpts?.signal,
+        transform: streamFromAnthropicSSE,
+      });
     },
   };
 }
@@ -365,14 +300,6 @@ function mapStopReason(reason: string | null): StopReason {
     default:
       return "error";
   }
-}
-
-function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) (out as Record<string, unknown>)[k] = v;
-  }
-  return out;
 }
 
 function anthropicUsage(u: AnthropicUsage): Usage {
