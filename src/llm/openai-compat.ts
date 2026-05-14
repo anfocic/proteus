@@ -8,13 +8,9 @@ import type {
   StreamEvent,
   Usage,
 } from "./types.ts";
-import { parseSSE, type SSERecord } from "./sse.ts";
-import {
-  errorFromResponse,
-  isAbortError,
-  LLMStreamError,
-  LLMTransportError,
-} from "./errors.ts";
+import type { SSERecord } from "./sse.ts";
+import { errorFromResponse } from "./errors.ts";
+import { runProviderStream, stripUndefined } from "./internal.ts";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
@@ -74,6 +70,34 @@ export function openaiCompat(opts: {
   defaultModel?: string;
 }): LLMProvider {
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  const url = `${baseURL}/chat/completions`;
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${opts.apiKey}`,
+  };
+
+  const buildBody = (req: CompletionRequest): ChatRequest => {
+    const messages: ChatMessage[] = [];
+    if (req.system) messages.push({ role: "system", content: req.system });
+    for (const m of req.messages) messages.push(...toOpenAIMessages(m));
+    return {
+      model: req.model || opts.defaultModel || "gpt-4o",
+      messages,
+      tools: req.tools?.map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema,
+        },
+      })),
+      tool_choice: req.toolChoice
+        ? req.toolChoice.type === "any" ? "required" : "auto"
+        : undefined,
+      max_tokens: req.maxTokens,
+      temperature: req.temperature,
+    };
+  };
 
   // Note: `req.cacheSystemPrompt` and `tool.cacheBreakpoint` are deliberately
   // ignored here — they are Anthropic-only hints (ADR 0010). OpenAI-shape hosts
@@ -81,35 +105,10 @@ export function openaiCompat(opts: {
   // that don't fit the normalized request. Silent ignore is intentional.
   return {
     async complete(req: CompletionRequest, completeOpts): Promise<CompletionResponse> {
-      const messages: ChatMessage[] = [];
-      if (req.system) messages.push({ role: "system", content: req.system });
-      for (const m of req.messages) messages.push(...toOpenAIMessages(m));
-
-      const body: ChatRequest = {
-        model: req.model || opts.defaultModel || "gpt-4o",
-        messages,
-        tools: req.tools?.map((t) => ({
-          type: "function",
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.inputSchema,
-          },
-        })),
-        tool_choice: req.toolChoice
-          ? req.toolChoice.type === "any" ? "required" : "auto"
-          : undefined,
-        max_tokens: req.maxTokens,
-        temperature: req.temperature,
-      };
-
-      const res = await fetch(`${baseURL}/chat/completions`, {
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${opts.apiKey}`,
-        },
-        body: JSON.stringify(stripUndefined(body as unknown as Record<string, unknown>)),
+        headers,
+        body: JSON.stringify(stripUndefined(buildBody(req))),
         signal: completeOpts?.signal,
       });
 
@@ -149,91 +148,20 @@ export function openaiCompat(opts: {
       };
     },
 
-    async *stream(req, streamOpts) {
-      const signal = streamOpts?.signal;
-      if (signal?.aborted) {
-        throw signal.reason ?? new DOMException("aborted", "AbortError");
-      }
-
-      const messages: ChatMessage[] = [];
-      if (req.system) messages.push({ role: "system", content: req.system });
-      for (const m of req.messages) messages.push(...toOpenAIMessages(m));
-
-      const body = {
-        model: req.model || opts.defaultModel || "gpt-4o",
-        messages,
-        tools: req.tools?.map((t) => ({
-          type: "function",
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.inputSchema,
-          },
-        })),
-        tool_choice: req.toolChoice
-          ? req.toolChoice.type === "any" ? "required" : "auto"
-          : undefined,
-        max_tokens: req.maxTokens,
-        temperature: req.temperature,
-        stream: true,
-        stream_options: { include_usage: true },
-      };
-
-      const ctrl = new AbortController();
-      const onAbort = () => ctrl.abort(signal?.reason);
-      signal?.addEventListener("abort", onAbort, { once: true });
-
-      let res: Response;
-      try {
-        res = await fetch(`${baseURL}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${opts.apiKey}`,
-          },
-          body: JSON.stringify(stripUndefined(body as unknown as Record<string, unknown>)),
-          signal: ctrl.signal,
-        });
-      } catch (e) {
-        signal?.removeEventListener("abort", onAbort);
-        if (isAbortError(e)) throw e;
-        throw new LLMTransportError({
-          provider: "openai-compat",
-          message: "OpenAI stream: transport failure during request",
-          phase: "stream",
-          cause: e,
-        });
-      }
-
-      if (!res.ok) {
-        const text = await res.text();
-        signal?.removeEventListener("abort", onAbort);
-        throw errorFromResponse("openai-compat", res, text, "stream");
-      }
-      if (!res.body) {
-        signal?.removeEventListener("abort", onAbort);
-        throw new LLMStreamError({
-          provider: "openai-compat",
-          message: "OpenAI stream: response has no body",
-          phase: "stream",
-        });
-      }
-
-      try {
-        yield* streamFromOpenAISSE(parseSSE(res.body, ctrl.signal));
-      } catch (e) {
-        if (isAbortError(e)) throw e;
-        if (e instanceof LLMTransportError || e instanceof LLMStreamError) throw e;
-        throw new LLMTransportError({
-          provider: "openai-compat",
-          message: "OpenAI stream: transport failure mid-stream",
-          phase: "stream",
-          cause: e,
-        });
-      } finally {
-        ctrl.abort();
-        signal?.removeEventListener("abort", onAbort);
-      }
+    stream(req, streamOpts) {
+      return runProviderStream({
+        provider: "openai-compat",
+        label: "OpenAI",
+        url,
+        headers,
+        body: stripUndefined({
+          ...buildBody(req),
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
+        signal: streamOpts?.signal,
+        transform: streamFromOpenAISSE,
+      });
     },
   };
 }
@@ -487,12 +415,4 @@ function mapFinishReason(reason: string | null): StopReason {
     default:
       return "error";
   }
-}
-
-function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) (out as Record<string, unknown>)[k] = v;
-  }
-  return out;
 }
