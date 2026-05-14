@@ -215,22 +215,33 @@ async function runHandler(
   }
 }
 
-type TurnDispatchResult =
-  | { kind: "complete"; toolResults: ToolResultRecord[] }
+type GateOutcome =
+  | { kind: "approved"; tu: ToolUseBlock }
+  | { kind: "decided"; result: ToolResultRecord };
+
+type GateEvent =
+  | { type: "tool_confirm_request"; toolUseId: string; name: string; input: unknown; summary: string }
+  | { type: "tool_confirm_response"; toolUseId: string; confirmed: boolean };
+
+type GateResult =
+  | { kind: "complete"; outcomes: GateOutcome[] }
   | { kind: "pending"; pending: PendingTool; decided: Record<string, ToolResultRecord> };
 
-async function dispatchTurn(
+/**
+ * Resolve each `tool_use` block of a turn to `approved` (run the handler) or
+ * `decided` (a fixed result), or suspend on a `"pending"` confirm decision.
+ * Yields confirm-gate events so the streaming path can surface them; the
+ * buffered path drains the generator and ignores the events. This is the
+ * single source of gate-decision logic for both `dispatchTurn` and
+ * `streamAgent`.
+ */
+async function* gateToolUses(
   toolUses: ToolUseBlock[],
   tools: ToolMap,
-  ctx: ToolContext<unknown>,
   confirm: ConfirmCallback | undefined,
   seed: Record<string, ToolResultRecord> = {},
-  toolConcurrency?: number,
-): Promise<TurnDispatchResult> {
+): AsyncGenerator<GateEvent, GateResult, void> {
   const decided: Record<string, ToolResultRecord> = { ...seed };
-  type GateOutcome =
-    | { kind: "approved"; tu: ToolUseBlock }
-    | { kind: "decided"; result: ToolResultRecord };
   const outcomes: GateOutcome[] = [];
 
   for (const tu of toolUses) {
@@ -257,6 +268,8 @@ async function dispatchTurn(
     }
 
     const summary = summarizeInput(tool, tu.input);
+    yield { type: "tool_confirm_request", toolUseId: tu.id, name: tu.name, input: tu.input, summary };
+
     if (!confirm) {
       const result: ToolResultRecord = {
         toolUseId: tu.id,
@@ -276,6 +289,7 @@ async function dispatchTurn(
         decided,
       };
     }
+    yield { type: "tool_confirm_response", toolUseId: tu.id, confirmed: decision === true };
     if (decision === false) {
       const result = declinedResult(tu, summary);
       decided[tu.id] = result;
@@ -285,7 +299,30 @@ async function dispatchTurn(
     }
   }
 
-  const results = await mapLimit(outcomes, toolConcurrency, (o) =>
+  return { kind: "complete", outcomes };
+}
+
+type TurnDispatchResult =
+  | { kind: "complete"; toolResults: ToolResultRecord[] }
+  | { kind: "pending"; pending: PendingTool; decided: Record<string, ToolResultRecord> };
+
+async function dispatchTurn(
+  toolUses: ToolUseBlock[],
+  tools: ToolMap,
+  ctx: ToolContext<unknown>,
+  confirm: ConfirmCallback | undefined,
+  seed: Record<string, ToolResultRecord> = {},
+  toolConcurrency?: number,
+): Promise<TurnDispatchResult> {
+  const gate = gateToolUses(toolUses, tools, confirm, seed);
+  let step = await gate.next();
+  while (!step.done) step = await gate.next(); // buffered path: drain, ignore events
+  const gated = step.value;
+  if (gated.kind === "pending") {
+    return { kind: "pending", pending: gated.pending, decided: gated.decided };
+  }
+
+  const results = await mapLimit(gated.outcomes, toolConcurrency, (o) =>
     o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx),
   );
   return { kind: "complete", toolResults: results };
@@ -565,67 +602,18 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
       return result;
     }
 
-    type GateOutcome =
-      | { kind: "approved"; tu: ToolUseBlock }
-      | { kind: "decided"; result: ToolResultRecord };
-    const outcomes: GateOutcome[] = [];
-    let pendingHit = false;
-
-    for (const tu of toolUses) {
-      const tool = state.tools.get(tu.name);
-      if (!tool) {
-        outcomes.push({
-          kind: "decided",
-          result: { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true },
-        });
-        continue;
-      }
-      if (!tool.requiresConfirmation) {
-        outcomes.push({ kind: "approved", tu });
-        continue;
-      }
-      const summary = summarizeInput(tool, tu.input);
-      yield {
-        type: "tool_confirm_request",
-        toolUseId: tu.id,
-        name: tu.name,
-        input: tu.input,
-        summary,
-      };
-      if (!input.confirm) {
-        outcomes.push({
-          kind: "decided",
-          result: {
-            toolUseId: tu.id,
-            content: "Tool requires confirmation but no confirm handler was provided",
-            isError: true,
-          },
-        });
-        continue;
-      }
-      const decision = await input.confirm({
-        toolUseId: tu.id,
-        name: tu.name,
-        input: tu.input,
-        summary,
-      });
-      if (decision === "pending") {
-        pendingHit = true;
-        break;
-      }
-      yield { type: "tool_confirm_response", toolUseId: tu.id, confirmed: decision === true };
-      if (decision) {
-        outcomes.push({ kind: "approved", tu });
-      } else {
-        outcomes.push({ kind: "decided", result: declinedResult(tu, summary) });
-      }
+    const gate = gateToolUses(toolUses, state.tools, input.confirm);
+    let step = await gate.next();
+    while (!step.done) {
+      yield step.value; // tool_confirm_request / tool_confirm_response
+      step = await gate.next();
     }
-
-    if (pendingHit) {
+    if (step.value.kind === "pending") {
       throw new Error(
         "streamAgent does not support 'pending' confirm decisions — use runAgent + resumeAgent for suspend/resume",
       );
     }
+    const outcomes = step.value.outcomes;
 
     for (const o of outcomes) {
       if (o.kind === "approved") {
