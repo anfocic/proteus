@@ -1,38 +1,67 @@
 # Proteus
 
-**Provider-agnostic LLM agent framework.** Write your agent once; run it against Anthropic or any OpenAI-compatible host without touching agent code.
+**Write your agent once. Run it against any LLM.**
 
 [![CI](https://github.com/anfocic/proteus/actions/workflows/ci.yml/badge.svg)](https://github.com/anfocic/proteus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![zero runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
-## The idea
+Proteus is a small TypeScript framework for building LLM agents. You wire up your tools, your system prompt, and your messages. Proteus runs the tool loop, handles streaming, routes between specialists, and gates destructive actions. The model vendor underneath is swappable — Claude one day, Groq the next, a local Ollama for dev — without touching your agent code.
 
-Every LLM API in the ecosystem is one of two structurally distinct shapes:
+It's about 3,500 lines, has no runtime dependencies, and you can read all of it in an afternoon.
 
-- **Anthropic shape** — content blocks, `tool_use` / `tool_result` as blocks.
-- **OpenAI-compat shape** — flat string content, `tool_calls` array, `role: "tool"` messages.
+## What it looks like
 
-Gemini, Mistral, Cohere, and every OSS-model host are variants of one of these two. Proteus normalizes both behind a single `LLMProvider` interface with one method, `complete(req)` (plus a parallel `stream(req)`). Two thin adapters fold the normalized shape back to each wire format. Everything else — the tool loop, routing, channels — is built on that one interface and never sees a vendor.
+```ts
+import { anthropic, runAgent } from "@fole/proteus";
 
-You bring your own API key and base URL. The framework ships no preset hosts and no model-id constants — that's user-space.
+const llm = anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-## Zero runtime dependencies
+const result = await runAgent({
+  llm,
+  model: "claude-sonnet-4-6",
+  system: "You're a weather assistant. Be brief.",
+  messages: [{ role: "user", content: "What's it like in Berlin?" }],
+  tools: [{
+    name: "get_weather",
+    description: "Current weather for a city",
+    inputSchema: {
+      type: "object",
+      properties: { city: { type: "string" } },
+      required: ["city"],
+    },
+    handler: async ({ city }) => `${city}: 18°C, light rain`,
+  }],
+});
 
-The framework imports nothing. Both adapters call `fetch` directly. Your `node_modules` is dev tooling only.
+console.log(result.finalText);
+//=> "Berlin's at 18°C with light rain right now."
+```
 
-## What's in the box
+Want to run that against Groq instead? Swap two lines:
 
-| Layer | What it gives you |
-|---|---|
-| **Adapters** | `anthropic` and `openaiCompat` — the two protocol shapes. Works with Groq, Together, Cerebras, OpenRouter, Fireworks, DeepInfra, Ollama, LM Studio, vLLM, Vercel AI Gateway, and every other OpenAI-compatible host. |
-| **Tool loop** | `runAgent` — concurrent tool dispatch, bounded iterations, per-tool `timeoutMs` and `maxResultBytes` caps, optional concurrency limit. |
-| **Streaming** | Parallel `stream()` method and `streamAgent` — provider deltas interleaved with tool-dispatch events. Buffered consumers pay no SSE tax. |
-| **Orchestration** | `classifyIntent` router → `Specialist` → tool stack. `orchestrate` supports `single`, `chain` (A's output feeds B), and `parallel` (fan-out, merge) modes, plus an optional evaluator quality-gate. |
-| **Confirmation gate** | Per-tool opt-in destructive-action gating. In-process callback for CLI/Telegram; HTTP suspend/resume (`stopReason: "pending"` + `resumeAgent`) for single-shot request/response. |
-| **Errors + retry** | Typed `LLMError` hierarchy (auth, rate-limit, bad-request, server, transport, stream). `withRetry` wraps any provider with full-jitter exponential backoff — composable, nothing downstream knows it exists. |
-| **Channels** | `SessionStore` abstraction + `createChatHandler` (buffered and streaming, framework-agnostic) + Telegram long-poll and webhook transports. |
-| **Caching + metering** | Anthropic prompt-caching hints (system prompt, tools, specialist roles). Cache-token usage metered on `Usage` and aggregated through the whole stack. |
+```ts
+import { openaiCompat } from "@fole/proteus";
+
+const llm = openaiCompat({
+  apiKey: process.env.GROQ_API_KEY!,
+  baseURL: "https://api.groq.com/openai/v1",
+});
+// runAgent({ llm, model: "llama-3.3-70b-versatile", ... }) — everything else is identical.
+```
+
+That's the whole pitch.
+
+## Why two adapters is enough
+
+Every LLM API in the wild is one of two shapes:
+
+- **Anthropic-shape** — content blocks, `tool_use` / `tool_result` as blocks.
+- **OpenAI-compat shape** — flat strings, `tool_calls` array, `role: "tool"` messages.
+
+Claude is the first. OpenAI, Groq, Together, Cerebras, OpenRouter, Fireworks, DeepInfra, Ollama, LM Studio, vLLM, Vercel AI Gateway, and basically every other host (including Gemini and Mistral via their compat endpoints) are the second. Proteus normalizes both behind one `LLMProvider` interface. Two thin adapters translate to and from the wire format. Everything above them — the tool loop, the router, the channels — never knows which vendor is on the other side.
+
+You bring your own API key and pick your own model id. The framework ships no preset hosts and no model constants.
 
 ## Install
 
@@ -40,7 +69,24 @@ The framework imports nothing. Both adapters call `fetch` directly. Your `node_m
 npm install @fole/proteus
 ```
 
-Requires Node 22+.
+Requires Node 22 or newer.
+
+## What you get
+
+| You can | Using |
+|---|---|
+| Run a tool-using agent against any model | `runAgent` |
+| Stream output token by token, with tool events interleaved | `streamAgent` |
+| Split your agent into specialists and route between them | `orchestrate` — `single`, `chain`, or `parallel` mode |
+| Gate destructive tools behind a "yes / no / ask later" prompt | `requiresConfirmation` + `ConfirmCallback` |
+| Pause an agent over HTTP and resume on the next request | `stopReason: "pending"` + `resumeAgent` |
+| Retry the flaky calls and not the broken ones | `withRetry` — composes with anything |
+| Catch errors by type instead of parsing strings | `LLMAuthError`, `LLMRateLimitError`, `LLMServerError`, … |
+| Cancel a slow tool when the agent is aborted | `ctx.signal` inside the handler |
+| Track tokens (including Anthropic cache hits) at every layer | `Usage` aggregated automatically |
+| Drop into Express, Hono, Cloudflare Workers, Telegram, … | `createChatHandler`, `createStreamingChatHandler`, Telegram polling + webhook |
+
+All composable. None of it is required — start with `runAgent` and grow into the rest.
 
 ## Run the demos
 
@@ -53,8 +99,8 @@ cp .env.example .env       # fill in the host you want to use
 
 | Command | What it shows |
 |---|---|
-| `PROVIDER=compat npm run demo` | Single tool call — model asks for weather, calls the tool, summarizes. |
-| `PROVIDER=anthropic npm run demo` | Same agent code, Anthropic instead. The abstraction holding is the point. |
+| `PROVIDER=compat npm run demo` | Single tool call. Model asks for weather, calls the tool, summarizes. |
+| `PROVIDER=anthropic npm run demo` | Same agent code, Anthropic instead. The point is that nothing else changes. |
 | `npm run demo:multi` | Multiple tools in one turn, dispatched concurrently. |
 | `npm run demo:triage` | Router → specialist orchestration. |
 | `npm run demo:confirm` | Confirmation gate on a destructive tool. |
@@ -62,19 +108,19 @@ cp .env.example .env       # fill in the host you want to use
 | `npm run demo:chat` / `demo:chat-stream` | HTTP chat handler, buffered and streaming. |
 | `npm run demo:telegram` / `demo:telegram-confirm` | Telegram transport, with and without the confirm gate. |
 
-Any OpenAI-compatible host works — set `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` in `.env`. See `.env.example` for Groq, Together, Cerebras, OpenRouter, Ollama, and LM Studio examples.
+Any OpenAI-compatible host works — set `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` in `.env`. The `.env.example` has snippets for Groq, Together, Cerebras, OpenRouter, Ollama, and LM Studio.
 
-## Architecture
+## The one rule
 
-One load-bearing rule: agent and framework code (`src/agent/`, `src/channel/`) may import only `src/llm/types.ts` and `src/llm/provider.ts` — **never an adapter file**. Provider construction happens in user code. Breaking that invariant defeats the whole abstraction.
+Agent and framework code (`src/agent/`, `src/channel/`) imports only `src/llm/types.ts` and `src/llm/provider.ts`. **Never an adapter file.** Provider construction happens in user code. Break that line and the abstraction stops being abstract.
 
-`CLAUDE.md` is the architecture reference; load-bearing decisions are recorded as numbered ADRs in `docs/adr/`.
+For the deeper architecture, `CLAUDE.md` is the reference. Load-bearing decisions live as numbered ADRs in `docs/adr/`.
 
 ## Status
 
-Proof of concept. The provider abstraction, both adapters, the tool loop, streaming, the full router → specialist → orchestrate stack, the confirmation gate with HTTP suspend/resume, typed errors, retry, channels, and caching hints are all in and tested (200+ tests, mock-driven, no live hosts needed).
+Pre-1.0. Everything in the table above is in and tested (230+ tests, all mock-driven so they run without API keys). The API may shift between minor versions until things settle.
 
-Published as `@fole/proteus`; pre-1.0, so the API may shift between minor versions until it stabilizes. `ROADMAP.md` tracks what's queued and what's deliberately out of scope.
+What's queued vs. deliberately out of scope lives in `ROADMAP.md`.
 
 ## License
 
