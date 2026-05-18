@@ -34,7 +34,17 @@ The framework imports nothing. Both adapters call `fetch` directly. Your `node_m
 | **Channels** | `SessionStore` abstraction + `createChatHandler` (buffered and streaming, framework-agnostic) + Telegram long-poll and webhook transports. |
 | **Caching + metering** | Anthropic prompt-caching hints (system prompt, tools, specialist roles). Cache-token usage metered on `Usage` and aggregated through the whole stack. |
 
+## Install
+
+```sh
+npm install @anfocic/proteus
+```
+
+Requires Node 22+.
+
 ## Run the demos
+
+Clone the repo, then:
 
 ```sh
 npm install
@@ -64,7 +74,7 @@ One load-bearing rule: agent and framework code (`src/agent/`, `src/channel/`) m
 
 Proof of concept. The provider abstraction, both adapters, the tool loop, streaming, the full router → specialist → orchestrate stack, the confirmation gate with HTTP suspend/resume, typed errors, retry, channels, and caching hints are all in and tested (200+ tests, mock-driven, no live hosts needed).
 
-It is not yet published to npm and the API is not versioned. `NEXT.md` tracks what's queued and what's deliberately out of scope.
+Published as `@anfocic/proteus`; pre-1.0, so the API may shift between minor versions until it stabilizes. `ROADMAP.md` tracks what's queued and what's deliberately out of scope.
 
 ## License
 

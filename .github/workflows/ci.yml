@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [feat/router-specialist]
+    branches: [main]
   pull_request:
 
 jobs:
