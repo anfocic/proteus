@@ -21,6 +21,11 @@ export interface ClassifyOpts {
    * model's response.
    */
   maxIntents?: number;
+  /**
+   * Forwarded to the router's `llm.complete()` call. Aborting cancels the
+   * router classification request.
+   */
+  signal?: AbortSignal;
 }
 
 export interface Classification {
@@ -47,13 +52,16 @@ export async function classifyIntent(opts: ClassifyOpts): Promise<Classification
     { role: "user", content: opts.message },
   ];
 
-  const res = await opts.llm.complete({
-    model: opts.model,
-    system,
-    messages,
-    maxTokens: ROUTER_MAX_TOKENS,
-    temperature: 0,
-  });
+  const res = await opts.llm.complete(
+    {
+      model: opts.model,
+      system,
+      messages,
+      maxTokens: ROUTER_MAX_TOKENS,
+      temperature: 0,
+    },
+    opts.signal ? { signal: opts.signal } : undefined,
+  );
 
   const text = extractText(res.content);
   return parseClassification(text, opts.intents, res.usage, maxIntents);

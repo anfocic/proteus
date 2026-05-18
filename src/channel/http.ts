@@ -34,6 +34,12 @@ export interface ChatHandlerConfig<TServices> {
    */
   evaluate?: EvaluatorFn;
   maxEvaluatorAttempts?: number;
+  /**
+   * Forwarded to `orchestrate`. Aborting cancels in-flight router /
+   * specialist LLM calls and fires `ctx.signal` for any tool handler in
+   * progress.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ChatRequest {
@@ -89,6 +95,7 @@ export function createChatHandler<TServices>(
             decision: req.confirm.decision,
           },
           confirm: pendingConfirm,
+          signal: config.signal,
         });
         if (result.suspended) {
           await config.pendingStore.set(req.sessionId, {
@@ -130,6 +137,7 @@ export function createChatHandler<TServices>(
       confirm,
       evaluate: config.evaluate,
       maxEvaluatorAttempts: config.maxEvaluatorAttempts,
+      signal: config.signal,
     });
 
     if (result.suspended) {

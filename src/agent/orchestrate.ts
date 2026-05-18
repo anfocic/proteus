@@ -96,6 +96,12 @@ export interface OrchestrateOpts<TServices> {
    * Confirms remain serialized regardless. Undefined → unbounded.
    */
   toolConcurrency?: number;
+  /**
+   * Forwarded to the router classification call and to every dispatched
+   * specialist. Aborting cancels in-flight LLM calls; the `AbortError`
+   * `DOMException` propagates out unwrapped.
+   */
+  signal?: AbortSignal;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
@@ -123,6 +129,7 @@ export interface ResumeOrchestrateOpts<TServices> {
   resume: import("./run.ts").ResumeDecision;
   confirm?: ConfirmCallback;
   toolConcurrency?: number;
+  signal?: AbortSignal;
 }
 
 export async function resumeOrchestrate<TServices>(
@@ -141,6 +148,7 @@ export async function resumeOrchestrate<TServices>(
     resume: opts.resume,
     confirm: opts.confirm,
     toolConcurrency: opts.toolConcurrency,
+    signal: opts.signal,
   });
   return {
     ...result,
@@ -174,6 +182,7 @@ export async function orchestrate<TServices>(
     intents,
     message: opts.message,
     history: opts.history,
+    signal: opts.signal,
   });
 
   switch (cls.mode) {
@@ -215,6 +224,7 @@ async function runSingle<TServices>(
       services: opts.services,
       confirm: opts.confirm,
       toolConcurrency: opts.toolConcurrency,
+      signal: opts.signal,
     });
     specialistUsage = addUsage(specialistUsage, result.usage);
 
@@ -296,6 +306,7 @@ async function runParallel<TServices>(
             services: opts.services,
             confirm,
             toolConcurrency: opts.toolConcurrency,
+            signal: opts.signal,
           })
         : Promise.reject(
             new Error(`unknown specialist '${intent.name}' in parallel dispatch`),
@@ -382,6 +393,8 @@ async function runChain<TServices>(
         messages,
         services: opts.services,
         confirm: opts.confirm,
+        toolConcurrency: opts.toolConcurrency,
+        signal: opts.signal,
       });
     } catch (e) {
       throw new ChainDispatchError(
@@ -410,7 +423,7 @@ async function runChain<TServices>(
 }
 
 export async function* streamOrchestrate<TServices>(
-  opts: OrchestrateOpts<TServices> & { signal?: AbortSignal },
+  opts: OrchestrateOpts<TServices>,
 ): AsyncGenerator<OrchestrateStreamEvent, OrchestrateResult, void> {
   if (opts.evaluate) {
     throw new Error(
@@ -425,6 +438,7 @@ export async function* streamOrchestrate<TServices>(
     intents,
     message: opts.message,
     history: opts.history,
+    signal: opts.signal,
   });
 
   if (cls.mode === "chain") {

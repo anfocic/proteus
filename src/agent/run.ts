@@ -159,9 +159,12 @@ class ToolTimeoutError extends Error {
   }
 }
 
-function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+function raceWithTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const id = setTimeout(() => reject(new ToolTimeoutError()), ms);
+    const id = setTimeout(() => {
+      onTimeout?.();
+      reject(new ToolTimeoutError());
+    }, ms);
     p.then(
       (v) => {
         clearTimeout(id);
@@ -173,6 +176,22 @@ function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * Compose an agent-level signal with a per-call timeout signal. `AbortSignal.any`
+ * throws on `undefined` entries, so we have to dispatch on which inputs are present.
+ * Returns a never-aborting signal when neither source is wired, so handlers can
+ * unconditionally pass `ctx.signal` to `fetch`/`setTimeout`/etc.
+ */
+function composeAbort(
+  agentSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal | undefined,
+): AbortSignal {
+  if (agentSignal && timeoutSignal) return AbortSignal.any([agentSignal, timeoutSignal]);
+  if (agentSignal) return agentSignal;
+  if (timeoutSignal) return timeoutSignal;
+  return new AbortController().signal;
 }
 
 function applyCap(s: string, maxBytes: number | undefined): string {
@@ -187,16 +206,24 @@ async function runHandler(
   tu: ToolUseBlock,
   tools: ToolMap,
   ctx: ToolContext<unknown>,
+  agentSignal: AbortSignal | undefined,
 ): Promise<ToolResultRecord> {
   const tool = tools.get(tu.name);
   if (!tool) {
     return { toolUseId: tu.id, content: `Unknown tool: ${tu.name}`, isError: true };
   }
+  const timeoutCtl = tool.timeoutMs !== undefined ? new AbortController() : undefined;
+  const callCtx: ToolContext<unknown> = {
+    ...ctx,
+    signal: composeAbort(agentSignal, timeoutCtl?.signal),
+  };
   try {
-    const handlerPromise = Promise.resolve(tool.handler(tu.input, ctx));
+    const handlerPromise = Promise.resolve(tool.handler(tu.input, callCtx));
     const out =
       tool.timeoutMs !== undefined
-        ? await raceWithTimeout(handlerPromise, tool.timeoutMs)
+        ? await raceWithTimeout(handlerPromise, tool.timeoutMs, () =>
+            timeoutCtl!.abort(new ToolTimeoutError()),
+          )
         : await handlerPromise;
     return { toolUseId: tu.id, content: applyCap(out, tool.maxResultBytes), isError: false };
   } catch (err) {
@@ -313,6 +340,7 @@ async function dispatchTurn(
   confirm: ConfirmCallback | undefined,
   seed: Record<string, ToolResultRecord> = {},
   toolConcurrency?: number,
+  agentSignal?: AbortSignal,
 ): Promise<TurnDispatchResult> {
   const gate = gateToolUses(toolUses, tools, confirm, seed);
   let step = await gate.next();
@@ -323,7 +351,7 @@ async function dispatchTurn(
   }
 
   const results = await mapLimit(gated.outcomes, toolConcurrency, (o) =>
-    o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx),
+    o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, tools, ctx, agentSignal),
   );
   return { kind: "complete", toolResults: results };
 }
@@ -346,8 +374,12 @@ function setup<TServices>(input: Omit<RunAgentInput<TServices>, "messages">): Ag
         ? { name, description, inputSchema, cacheBreakpoint }
         : { name, description, inputSchema },
   );
+  // Template ctx; runHandler replaces `signal` per-call with the composition of
+  // input.signal and the per-tool timeoutMs controller. Placeholder here is
+  // never observed by user code.
   const ctx: ToolContext<unknown> = {
     services: (input.services ?? {}) as unknown,
+    signal: new AbortController().signal,
   };
   return {
     input: input as RunAgentInput<TServices>,
@@ -416,6 +448,7 @@ async function loop<TServices>(
       state.input.confirm,
       undefined,
       state.input.toolConcurrency,
+      state.input.signal,
     );
     if (dispatch.kind === "pending") {
       messages.pop();
@@ -488,7 +521,7 @@ export async function resumeAgent<TServices = Record<string, unknown>>(
     if (!tu) {
       throw new Error(`resumeAgent: pending toolUseId ${resume.toolUseId} not in saved turn`);
     }
-    seed[tu.id] = await runHandler(tu, state.tools, state.ctx);
+    seed[tu.id] = await runHandler(tu, state.tools, state.ctx, input.signal);
   }
 
   const dispatch = await dispatchTurn(
@@ -498,6 +531,7 @@ export async function resumeAgent<TServices = Record<string, unknown>>(
     input.confirm,
     seed,
     input.toolConcurrency,
+    input.signal,
   );
   const messagesWithTurn = [...suspended.messages, { role: "assistant" as const, content: suspended.turnContent }];
 
@@ -627,7 +661,9 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
     }
 
     const results = await mapLimit(outcomes, input.toolConcurrency, (o) =>
-      o.kind === "decided" ? Promise.resolve(o.result) : runHandler(o.tu, state.tools, state.ctx),
+      o.kind === "decided"
+        ? Promise.resolve(o.result)
+        : runHandler(o.tu, state.tools, state.ctx, input.signal),
     );
 
     for (const r of results) {
