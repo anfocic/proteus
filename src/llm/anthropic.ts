@@ -4,6 +4,7 @@ import type {
   CompletionResponse,
   ContentBlock,
   Message,
+  ResponseFormat,
   StopReason,
   StreamEvent,
   Usage,
@@ -58,7 +59,14 @@ export function anthropic(opts: {
   const buildBody = (req: CompletionRequest) => ({
     model: req.model || opts.defaultModel || "claude-sonnet-4-5",
     max_tokens: req.maxTokens ?? 1024,
-    system: encodeSystem(req.system, req.cacheSystemPrompt),
+    // Order matters: append the responseFormat instructions to the system text
+    // FIRST, then apply cache_control to the combined string. That way the
+    // cache covers the full prompt the model sees, and changing the schema
+    // invalidates the cache (correct).
+    system: encodeSystem(
+      appendResponseFormatInstructions(req.system, req.responseFormat),
+      req.cacheSystemPrompt,
+    ),
     messages: req.messages.map(toAnthropicMessage),
     tools: req.tools?.map(encodeTool),
     tool_choice: req.toolChoice,
@@ -323,6 +331,28 @@ function encodeSystem(
   if (system === undefined) return undefined;
   if (!cache) return system;
   return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+}
+
+/**
+ * Anthropic has no native `response_format`. Append JSON-output instructions
+ * to the system prompt so the model is steered toward valid JSON. Callers
+ * should still validate / repair the response (see `tryParseJSON`).
+ */
+function appendResponseFormatInstructions(
+  system: string | undefined,
+  rf: ResponseFormat | undefined,
+): string | undefined {
+  if (!rf) return system;
+  const block =
+    rf.type === "json_object"
+      ? "Respond with ONLY a valid JSON object. No prose, no markdown fences, no commentary."
+      : [
+          "Respond with ONLY a JSON object matching the schema below. No prose, no markdown fences, no commentary.",
+          "",
+          "Schema:",
+          JSON.stringify(rf.schema, null, 2),
+        ].join("\n");
+  return system ? `${system}\n\n${block}` : block;
 }
 
 function encodeTool(t: { name: string; description: string; inputSchema: unknown; cacheBreakpoint?: boolean }) {
