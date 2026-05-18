@@ -4,6 +4,7 @@ export type {
   CompletionResponse,
   ContentBlock,
   Message,
+  ResponseFormat,
   StopReason,
   StreamEvent,
   ToolSchema,

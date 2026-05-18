@@ -4,6 +4,7 @@ import type {
   CompletionResponse,
   ContentBlock,
   Message,
+  ResponseFormat,
   StopReason,
   StreamEvent,
   Usage,
@@ -38,6 +39,16 @@ interface ChatRequest {
   tool_choice?: "auto" | "required";
   max_tokens?: number;
   temperature?: number;
+  response_format?:
+    | { type: "json_object" }
+    | {
+        type: "json_schema";
+        json_schema: {
+          name: string;
+          schema: Record<string, unknown>;
+          strict?: boolean;
+        };
+      };
 }
 
 interface ChatResponse {
@@ -96,6 +107,7 @@ export function openaiCompat(opts: {
         : undefined,
       max_tokens: req.maxTokens,
       temperature: req.temperature,
+      response_format: buildResponseFormat(req.responseFormat),
     };
   };
 
@@ -401,6 +413,19 @@ function toOpenAIMessages(msg: Message): ChatMessage[] {
     out.reasoning_content = reasonings.map((r) => r.text).join("");
   }
   return [out];
+}
+
+function buildResponseFormat(rf: ResponseFormat | undefined): ChatRequest["response_format"] {
+  if (!rf) return undefined;
+  if (rf.type === "json_object") return { type: "json_object" };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: rf.name ?? "response",
+      schema: rf.schema,
+      ...(rf.strict !== undefined && { strict: rf.strict }),
+    },
+  };
 }
 
 function mapFinishReason(reason: string | null): StopReason {

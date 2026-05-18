@@ -13,7 +13,35 @@ export interface CompletionRequest {
    * OpenAI-compat adapter (Anthropic-only feature). ADR 0010.
    */
   cacheSystemPrompt?: boolean;
+  /**
+   * Constrain the model's output to JSON. Asymmetric per-provider behaviour:
+   *
+   * - **OpenAI-compat**: maps to native `response_format` — `{ type:
+   *   "json_object" }` for any-valid-JSON, `{ type: "json_schema", json_schema:
+   *   { name, schema, strict } }` for schema-enforced output.
+   * - **Anthropic**: there is no native `response_format`. The adapter appends
+   *   schema instructions to the system prompt (prompt-only strategy). Tool-use
+   *   coercion would emit `input_json_delta` instead of `text_delta` and break
+   *   every streaming consumer expecting text — deferred. ADR 0014.
+   *
+   * Combine with `cacheSystemPrompt` freely: schema instructions are appended
+   * to the system prompt *before* the cache marker, so the cache covers the
+   * full text. Changing the schema invalidates the cache (correct).
+   */
+  responseFormat?: ResponseFormat;
 }
+
+export type ResponseFormat =
+  | { type: "json_object" }
+  | {
+      type: "json_schema";
+      /** Optional name surfaced to OpenAI-compat hosts. Ignored by Anthropic. */
+      name?: string;
+      /** JSON Schema describing the expected output. */
+      schema: Record<string, unknown>;
+      /** Forwarded as OpenAI `json_schema.strict`. Anthropic ignores. */
+      strict?: boolean;
+    };
 
 export interface CompletionResponse {
   id?: string;

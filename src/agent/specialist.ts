@@ -1,5 +1,5 @@
 import type { LLMProvider } from "../llm/provider.ts";
-import type { Message } from "../llm/types.ts";
+import type { Message, ResponseFormat } from "../llm/types.ts";
 import {
   resumeAgent,
   runAgent,
@@ -45,6 +45,7 @@ export interface RunSpecialistOpts<TServices> {
   temperature?: number;
   toolConcurrency?: number;
   signal?: AbortSignal;
+  responseFormat?: ResponseFormat;
 }
 
 export async function runSpecialist<TServices>(
@@ -64,6 +65,7 @@ export async function runSpecialist<TServices>(
     temperature: opts.temperature,
     toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
+    responseFormat: opts.responseFormat,
   });
 }
 
@@ -80,6 +82,7 @@ export interface ResumeSpecialistOpts<TServices> {
   temperature?: number;
   toolConcurrency?: number;
   signal?: AbortSignal;
+  responseFormat?: ResponseFormat;
 }
 
 export async function resumeSpecialist<TServices>(
@@ -100,6 +103,7 @@ export async function resumeSpecialist<TServices>(
     temperature: opts.temperature,
     toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
+    responseFormat: opts.responseFormat,
   });
 }
 
@@ -120,5 +124,6 @@ export async function* streamSpecialist<TServices>(
     temperature: opts.temperature,
     toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
+    responseFormat: opts.responseFormat,
   });
 }
