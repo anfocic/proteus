@@ -1,9 +1,8 @@
 {
-  "name": "proteus",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@anfocic/proteus",
+  "version": "0.1.0",
+  "description": "Provider-agnostic LLM agent framework. One LLMProvider interface, two adapters (Anthropic + OpenAI-compatible), tool loop, router/specialist orchestration, streaming, confirmation gate, typed errors, retry, channels. Zero runtime dependencies.",
   "type": "module",
-  "description": "Provider-agnostic agent framework — proof of concept",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -12,10 +11,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": ["dist", "src", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "demo": "node --env-file-if-exists=.env --import tsx demo/weather.ts",
     "demo:multi": "node --env-file-if-exists=.env --import tsx demo/multi-tool.ts",
     "demo:triage": "node --env-file-if-exists=.env --import tsx demo/triage.ts",
@@ -27,6 +27,36 @@
     "demo:chat-stream": "node --env-file-if-exists=.env --import tsx demo/chat-stream.ts",
     "test": "node --import tsx --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "agents",
+    "anthropic",
+    "openai",
+    "claude",
+    "ai",
+    "framework",
+    "tool-use",
+    "streaming",
+    "orchestration",
+    "router"
+  ],
+  "author": "Andrej <andrej@fole.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anfocic/proteus.git"
+  },
+  "homepage": "https://github.com/anfocic/proteus#readme",
+  "bugs": {
+    "url": "https://github.com/anfocic/proteus/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

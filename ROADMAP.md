@@ -1,4 +1,4 @@
-# NEXT — Roadmap
+# Roadmap
 
 What's shipped, what's queued, what's deliberately not. Phase 1 (provider abstraction + adapters), Phase 2 (router → specialist → orchestrate + tests), and the streaming layer are in. Phase 3 has confirmation gate, typed `LLMError` hierarchy, the `withRetry` wrapper, usage aggregation on agent/orchestrate results, HTTP suspend/resume for the confirm gate, per-tool `timeoutMs` + `maxResultBytes` defensive caps, the evaluator/quality-gate hook on `orchestrate`, and Anthropic prompt-caching hints (`cacheSystemPrompt` + `ToolSchema.cacheBreakpoint` + `Specialist.cacheRole`) in. The list below is the work that turns this PoC into something a real consumer (intrebit, third-party agents) can build on top of.
 
