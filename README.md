@@ -37,7 +37,7 @@ The framework imports nothing. Both adapters call `fetch` directly. Your `node_m
 ## Install
 
 ```sh
-npm install @anfocic/proteus
+npm install @fole/proteus
 ```
 
 Requires Node 22+.
@@ -74,7 +74,7 @@ One load-bearing rule: agent and framework code (`src/agent/`, `src/channel/`) m
 
 Proof of concept. The provider abstraction, both adapters, the tool loop, streaming, the full router → specialist → orchestrate stack, the confirmation gate with HTTP suspend/resume, typed errors, retry, channels, and caching hints are all in and tested (200+ tests, mock-driven, no live hosts needed).
 
-Published as `@anfocic/proteus`; pre-1.0, so the API may shift between minor versions until it stabilizes. `ROADMAP.md` tracks what's queued and what's deliberately out of scope.
+Published as `@fole/proteus`; pre-1.0, so the API may shift between minor versions until it stabilizes. `ROADMAP.md` tracks what's queued and what's deliberately out of scope.
 
 ## License
 
