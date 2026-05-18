@@ -1,7 +1,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { anthropic, openaiCompat } from "../src/index.ts";
-import { userMsg } from "./_mock.ts";
+import {
+  anthropic,
+  openaiCompat,
+  orchestrate,
+  runAgent,
+  runSpecialist,
+  createSpecialist,
+} from "../src/index.ts";
+import { mockProvider, response, text, userMsg } from "./_mock.ts";
 
 interface CapturedRequest {
   url: string;
@@ -257,4 +264,193 @@ test("openai-compat: cache hints + responseFormat → response_format honoured, 
   } finally {
     restore();
   }
+});
+
+// --- Streaming path ---------------------------------------------------------
+
+test("openai-compat stream: responseFormat appears in streaming request body", async () => {
+  // Minimal valid SSE stream that emits one chunk then [DONE].
+  const sse = [
+    'data: {"id":"x","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n',
+    'data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    "data: [DONE]\n\n",
+  ].join("");
+
+  const captured: CapturedRequest[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    captured.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+    return new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const llm = openaiCompat({ apiKey: "k", baseURL: "https://x" });
+    const events = [];
+    for await (const ev of llm.stream({
+      model: "m",
+      messages: [userMsg("hi")],
+      responseFormat: { type: "json_schema", name: "p", schema: personSchema, strict: true },
+    })) {
+      events.push(ev);
+    }
+    const body = captured[0]!.body;
+    assert.deepEqual(body.response_format, {
+      type: "json_schema",
+      json_schema: { name: "p", schema: personSchema, strict: true },
+    });
+    assert.equal(body.stream, true);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("anthropic stream: responseFormat instructions appear in streaming request body", async () => {
+  const sse = [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  ].join("");
+
+  const captured: CapturedRequest[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    captured.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+    return new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const llm = anthropic({ apiKey: "k" });
+    const events = [];
+    for await (const ev of llm.stream({
+      model: "claude-x",
+      system: "you are an api",
+      messages: [userMsg("hi")],
+      responseFormat: { type: "json_schema", schema: personSchema },
+    })) {
+      events.push(ev);
+    }
+    const system = captured[0]!.body.system as string;
+    assert.ok(system.includes("Respond with ONLY a JSON object matching the schema"));
+    assert.equal(captured[0]!.body.stream, true);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// --- Strict flag edge cases -------------------------------------------------
+
+test("openai-compat: responseFormat with strict:false → strict:false forwarded (not stripped)", async () => {
+  const { captured, restore } = captureFetchOpenAI();
+  try {
+    const llm = openaiCompat({ apiKey: "k", baseURL: "https://x" });
+    await llm.complete({
+      model: "m",
+      messages: [userMsg("hi")],
+      responseFormat: { type: "json_schema", schema: personSchema, strict: false },
+    });
+    const rf = captured[0]!.body.response_format as {
+      json_schema: { strict?: boolean };
+    };
+    assert.equal(rf.json_schema.strict, false, "explicit strict:false must reach the body");
+  } finally {
+    restore();
+  }
+});
+
+// --- Anthropic ignores strict ----------------------------------------------
+
+test("anthropic: strict flag is never mentioned in the prompt-only instruction text", async () => {
+  const { captured, restore } = captureFetchAnthropic();
+  try {
+    const llm = anthropic({ apiKey: "k" });
+    await llm.complete({
+      model: "claude-x",
+      messages: [userMsg("hi")],
+      responseFormat: { type: "json_schema", schema: personSchema, strict: true },
+    });
+    const system = captured[0]!.body.system as string;
+    assert.ok(
+      !/\bstrict\b/i.test(system),
+      "anthropic prompt-only must not leak the 'strict' field — that's an OAI concept",
+    );
+  } finally {
+    restore();
+  }
+});
+
+// --- Round-trip via runAgent / runSpecialist / orchestrate ------------------
+
+test("runAgent: responseFormat reaches llm.complete()", async () => {
+  const llm = mockProvider([response([text('{"k":1}')], "end_turn")]);
+  await runAgent({
+    llm,
+    model: "m",
+    tools: [],
+    messages: [userMsg("hi")],
+    responseFormat: { type: "json_object" },
+  });
+  assert.deepEqual(llm.calls[0]!.responseFormat, { type: "json_object" });
+});
+
+test("runAgent: responseFormat unset → field absent on llm.complete() call", async () => {
+  const llm = mockProvider([response([text("ok")], "end_turn")]);
+  await runAgent({
+    llm,
+    model: "m",
+    tools: [],
+    messages: [userMsg("hi")],
+  });
+  assert.equal(llm.calls[0]!.responseFormat, undefined);
+});
+
+test("runSpecialist: responseFormat threads through to the provider", async () => {
+  const llm = mockProvider([response([text('{"k":2}')], "end_turn")]);
+  const spec = createSpecialist({
+    name: "extractor",
+    description: "",
+    role: "you extract data",
+    tools: [],
+  });
+  await runSpecialist({
+    llm,
+    specialist: spec,
+    defaultModel: "m",
+    messages: [userMsg("hi")],
+    services: {},
+    responseFormat: { type: "json_schema", schema: personSchema },
+  });
+  const rf = llm.calls[0]!.responseFormat as { type: string; schema?: object } | undefined;
+  assert.ok(rf, "responseFormat should be forwarded");
+  assert.equal(rf.type, "json_schema");
+});
+
+test("orchestrate: responseFormat reaches the dispatched specialist (not the router)", async () => {
+  // Router call returns an intent classification; specialist call returns JSON.
+  const llm = mockProvider([
+    response([text('{"intents":["x"],"mode":"single"}')], "end_turn"),
+    response([text('{"ok":1}')], "end_turn"),
+  ]);
+  const spec = createSpecialist({
+    name: "x",
+    description: "the one",
+    role: "you respond in JSON",
+    tools: [],
+  });
+  await orchestrate({
+    llm,
+    routerModel: "router",
+    specialistModel: "specialist",
+    specialists: [spec],
+    services: {},
+    message: "hi",
+    responseFormat: { type: "json_object" },
+  });
+  // First call is the router (no responseFormat); second is the specialist (with responseFormat).
+  assert.equal(llm.calls[0]!.responseFormat, undefined, "router call must NOT receive responseFormat");
+  assert.deepEqual(llm.calls[1]!.responseFormat, { type: "json_object" });
 });

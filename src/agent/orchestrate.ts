@@ -1,5 +1,5 @@
 import type { LLMProvider } from "../llm/provider.ts";
-import type { Message, Usage } from "../llm/types.ts";
+import type { Message, ResponseFormat, Usage } from "../llm/types.ts";
 import { classifyIntent, type Intent } from "./router.ts";
 import type { Classification } from "./router.ts";
 import {
@@ -102,6 +102,12 @@ export interface OrchestrateOpts<TServices> {
    * `DOMException` propagates out unwrapped.
    */
   signal?: AbortSignal;
+  /**
+   * Forwarded to every dispatched specialist (single, chain, parallel). The
+   * router classification call does NOT receive this — router already shapes
+   * its own JSON output internally. ADR 0014.
+   */
+  responseFormat?: ResponseFormat;
 }
 
 export interface OrchestrateResult extends RunAgentResult {
@@ -130,6 +136,7 @@ export interface ResumeOrchestrateOpts<TServices> {
   confirm?: ConfirmCallback;
   toolConcurrency?: number;
   signal?: AbortSignal;
+  responseFormat?: ResponseFormat;
 }
 
 export async function resumeOrchestrate<TServices>(
@@ -149,6 +156,7 @@ export async function resumeOrchestrate<TServices>(
     confirm: opts.confirm,
     toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
+    responseFormat: opts.responseFormat,
   });
   return {
     ...result,
@@ -225,6 +233,7 @@ async function runSingle<TServices>(
       confirm: opts.confirm,
       toolConcurrency: opts.toolConcurrency,
       signal: opts.signal,
+      responseFormat: opts.responseFormat,
     });
     specialistUsage = addUsage(specialistUsage, result.usage);
 
@@ -307,6 +316,7 @@ async function runParallel<TServices>(
             confirm,
             toolConcurrency: opts.toolConcurrency,
             signal: opts.signal,
+            responseFormat: opts.responseFormat,
           })
         : Promise.reject(
             new Error(`unknown specialist '${intent.name}' in parallel dispatch`),
@@ -395,6 +405,7 @@ async function runChain<TServices>(
         confirm: opts.confirm,
         toolConcurrency: opts.toolConcurrency,
         signal: opts.signal,
+        responseFormat: opts.responseFormat,
       });
     } catch (e) {
       throw new ChainDispatchError(
@@ -463,6 +474,7 @@ export async function* streamOrchestrate<TServices>(
     confirm: opts.confirm,
     toolConcurrency: opts.toolConcurrency,
     signal: opts.signal,
+    responseFormat: opts.responseFormat,
   });
 
   return {

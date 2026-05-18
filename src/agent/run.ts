@@ -2,6 +2,7 @@ import type { LLMProvider } from "../llm/provider.ts";
 import type {
   ContentBlock,
   Message,
+  ResponseFormat,
   StopReason,
   StreamEvent,
   ToolSchema,
@@ -41,6 +42,12 @@ export interface RunAgentInput<TServices = Record<string, unknown>> {
   maxTokens?: number;
   temperature?: number;
   cacheSystemPrompt?: boolean;
+  /**
+   * Constrain the model's output to JSON. Forwarded to `llm.complete()` /
+   * `llm.stream()` unchanged. See `ResponseFormat` for shape and the
+   * Anthropic vs OAI behaviour split (ADR 0014).
+   */
+  responseFormat?: ResponseFormat;
   /**
    * Forwarded to `llm.complete()` / `llm.stream()`. Aborting cancels the
    * in-flight provider call; the rejection (a `DOMException` named
@@ -412,6 +419,7 @@ async function loop<TServices>(
         maxTokens: state.input.maxTokens,
         temperature: state.input.temperature,
         cacheSystemPrompt: state.input.cacheSystemPrompt,
+        responseFormat: state.input.responseFormat,
       },
       state.input.signal ? { signal: state.input.signal } : undefined,
     );
@@ -597,6 +605,7 @@ export async function* streamAgent<TServices = Record<string, unknown>>(
         maxTokens: input.maxTokens,
         temperature: input.temperature,
         cacheSystemPrompt: input.cacheSystemPrompt,
+        responseFormat: input.responseFormat,
       },
       input.signal ? { signal: input.signal } : undefined,
     )) {
