@@ -44,6 +44,7 @@ export interface RunSpecialistOpts<TServices> {
   maxTokens?: number;
   temperature?: number;
   toolConcurrency?: number;
+  signal?: AbortSignal;
 }
 
 export async function runSpecialist<TServices>(
@@ -62,6 +63,7 @@ export async function runSpecialist<TServices>(
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     toolConcurrency: opts.toolConcurrency,
+    signal: opts.signal,
   });
 }
 
@@ -77,6 +79,7 @@ export interface ResumeSpecialistOpts<TServices> {
   maxTokens?: number;
   temperature?: number;
   toolConcurrency?: number;
+  signal?: AbortSignal;
 }
 
 export async function resumeSpecialist<TServices>(
@@ -96,11 +99,12 @@ export async function resumeSpecialist<TServices>(
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     toolConcurrency: opts.toolConcurrency,
+    signal: opts.signal,
   });
 }
 
 export async function* streamSpecialist<TServices>(
-  opts: RunSpecialistOpts<TServices> & { signal?: AbortSignal },
+  opts: RunSpecialistOpts<TServices>,
 ): AsyncGenerator<AgentEvent, RunAgentResult, void> {
   return yield* streamAgent({
     llm: opts.llm,

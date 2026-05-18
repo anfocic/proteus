@@ -34,6 +34,12 @@ export interface ChatHandlerConfig<TServices> {
    */
   evaluate?: EvaluatorFn;
   maxEvaluatorAttempts?: number;
+  /**
+   * Forwarded to `orchestrate`. Aborting cancels in-flight router /
+   * specialist LLM calls and fires `ctx.signal` for any tool handler in
+   * progress.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ChatRequest {
@@ -89,6 +95,7 @@ export function createChatHandler<TServices>(
             decision: req.confirm.decision,
           },
           confirm: pendingConfirm,
+          signal: config.signal,
         });
         if (result.suspended) {
           await config.pendingStore.set(req.sessionId, {
@@ -130,6 +137,7 @@ export function createChatHandler<TServices>(
       confirm,
       evaluate: config.evaluate,
       maxEvaluatorAttempts: config.maxEvaluatorAttempts,
+      signal: config.signal,
     });
 
     if (result.suspended) {
@@ -177,7 +185,13 @@ export type StreamingChatHandler = (
 ) => AsyncGenerator<ChatStreamEvent, void, void>;
 
 export function createStreamingChatHandler<TServices>(
-  config: Omit<ChatHandlerConfig<TServices>, "pendingStore" | "evaluate" | "maxEvaluatorAttempts">,
+  // signal is omitted: streaming consumers supply abort per-request via the
+  // second-arg `opts.signal`, not as a single config-wide signal. Mixing both
+  // would force an `AbortSignal.any` compose with no clear win.
+  config: Omit<
+    ChatHandlerConfig<TServices>,
+    "pendingStore" | "evaluate" | "maxEvaluatorAttempts" | "signal"
+  >,
 ): StreamingChatHandler {
   return async function* (req, opts) {
     const history = await config.store.get(req.sessionId);

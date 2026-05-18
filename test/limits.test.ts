@@ -6,6 +6,7 @@ import {
   streamAgent,
   type AgentEvent,
   type ConfirmCallback,
+  type ToolContext,
   type ToolDef,
 } from "../src/index.ts";
 import { mockProvider, response, text, toolUse, userMsg } from "./_mock.ts";
@@ -223,4 +224,308 @@ test("multibyte boundary: emoji split does not throw", async () => {
   const tr = findToolResult(result.messages);
   assert.ok(tr.content.includes("[TRUNCATED: 5 of 12 bytes]"));
   // Must be valid JS string (no thrown decode error reaching here is the assertion).
+});
+
+// --- ctx.signal --------------------------------------------------------------
+
+test("ctx.signal: present and not-aborted at handler entry with no input signal and no timeoutMs", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "probe", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  let observed: AbortSignal | undefined;
+  const tool: ToolDef = {
+    name: "probe",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      observed = ctx.signal;
+      return "k";
+    },
+  };
+  await runAgent({ llm, model: "m", tools: [tool], messages: [userMsg("hi")] });
+  assert.ok(observed instanceof AbortSignal, "ctx.signal must be an AbortSignal");
+  assert.equal(observed!.aborted, false);
+});
+
+test("ctx.signal: fires when agent-level signal is aborted mid-handler", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "wait", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const ctl = new AbortController();
+  let abortedInHandler = false;
+  const tool: ToolDef = {
+    name: "wait",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      await new Promise<void>((resolve) => {
+        ctx.signal.addEventListener("abort", () => {
+          abortedInHandler = ctx.signal.aborted;
+          resolve();
+        });
+        setTimeout(() => ctl.abort(), 5);
+      });
+      return "observed";
+    },
+  };
+  // After the handler observes the abort and returns, the next loop iteration
+  // tries llm.complete with the aborted signal and throws AbortError. That's
+  // the correct propagation contract — assert the handler observed it first.
+  await assert.rejects(
+    runAgent({
+      llm,
+      model: "m",
+      tools: [tool],
+      messages: [userMsg("hi")],
+      signal: ctl.signal,
+    }),
+    (e: unknown) => e instanceof DOMException && e.name === "AbortError",
+  );
+  assert.equal(abortedInHandler, true);
+});
+
+test("ctx.signal: fires on timeoutMs expiry AND framework still returns [TIMEOUT]", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "slow", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  let aborted = false;
+  const tool: ToolDef = {
+    name: "slow",
+    description: "",
+    inputSchema: {},
+    timeoutMs: 10,
+    handler: async (_input, ctx: ToolContext) => {
+      ctx.signal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      return "never";
+    },
+  };
+  const result = await runAgent({
+    llm,
+    model: "m",
+    tools: [tool],
+    messages: [userMsg("hi")],
+  });
+  // Outer contract preserved.
+  const tr = findToolResult(result.messages);
+  assert.equal(tr.content, "[TIMEOUT] Tool exceeded 10ms");
+  assert.equal(tr.isError, true);
+  // Give the still-running handler a moment to observe the abort.
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(aborted, true, "ctx.signal should have fired when timeoutMs expired");
+});
+
+test("ctx.signal: fetch-style consumer actually cancels on agent abort", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "net", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const ctl = new AbortController();
+  let handlerObservedCancel = false;
+  // Simulate fetch: a promise that rejects when its signal aborts.
+  function fakeFetch(signal: AbortSignal): Promise<string> {
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      // never resolves on its own
+    });
+  }
+  const tool: ToolDef = {
+    name: "net",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      setTimeout(() => ctl.abort(), 5);
+      try {
+        return await fakeFetch(ctx.signal);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          handlerObservedCancel = true;
+          return "cancelled";
+        }
+        throw err;
+      }
+    },
+  };
+  // The handler observes the abort and returns; the next iteration's llm call
+  // then rejects with the aborted signal. Both are expected.
+  await assert.rejects(
+    runAgent({
+      llm,
+      model: "m",
+      tools: [tool],
+      messages: [userMsg("hi")],
+      signal: ctl.signal,
+    }),
+    (e: unknown) => e instanceof DOMException && e.name === "AbortError",
+  );
+  assert.equal(handlerObservedCancel, true);
+});
+
+test("ctx.signal: independent instance per dispatch (two tools in one turn)", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "p", { i: 1 }), toolUse("u2", "p", { i: 2 })], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const seen: AbortSignal[] = [];
+  const tool: ToolDef = {
+    name: "p",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      seen.push(ctx.signal);
+      return "ok";
+    },
+  };
+  await runAgent({ llm, model: "m", tools: [tool], messages: [userMsg("hi")] });
+  assert.equal(seen.length, 2);
+  assert.notEqual(seen[0], seen[1], "each dispatch must get its own AbortSignal");
+});
+
+test("ctx.signal: resumeAgent uses the resume call's signal, not the original", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "wt", {})], "tool_use"),
+    response([text("done")], "end_turn"),
+  ]);
+  let observed: AbortSignal | undefined;
+  const tool: ToolDef = {
+    name: "wt",
+    description: "",
+    inputSchema: {},
+    requiresConfirmation: true,
+    summarize: () => "wt",
+    handler: async (_input, ctx: ToolContext) => {
+      observed = ctx.signal;
+      return "ran";
+    },
+  };
+  const originalCtl = new AbortController();
+  originalCtl.abort(); // pre-aborted, would fire immediately if re-used
+  const pendingConfirm: ConfirmCallback = async () => "pending";
+  const first = await runAgent({
+    llm,
+    model: "m",
+    tools: [tool],
+    messages: [userMsg("go")],
+    confirm: pendingConfirm,
+    // intentionally NO signal here; resume supplies a fresh one
+  });
+  assert.ok(first.suspended);
+
+  const resumeCtl = new AbortController();
+  await resumeAgent({
+    llm,
+    model: "m",
+    tools: [tool],
+    suspended: first.suspended!,
+    resume: { toolUseId: "u1", decision: "approve" },
+    signal: resumeCtl.signal,
+  });
+  assert.ok(observed, "handler must have observed a signal");
+  assert.equal(observed!.aborted, false, "resume signal is fresh and not aborted");
+});
+
+test("ctx.signal: withRetry preserves signal across the wrapped complete()", async () => {
+  // Regression: withRetry.complete previously dropped the {signal} second-arg,
+  // so handlers under withRetry never saw agent-abort propagation. This test
+  // confirms the signal reaches ctx.signal even when the provider is wrapped.
+  const { withRetry } = await import("../src/llm/retry.ts");
+  const base = mockProvider([
+    response([toolUse("u1", "wait", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const llm = withRetry(base, { maxAttempts: 2, baseMs: 1 });
+  const ctl = new AbortController();
+  let aborted = false;
+  const tool: ToolDef = {
+    name: "wait",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      await new Promise<void>((resolve) => {
+        ctx.signal.addEventListener("abort", () => {
+          aborted = true;
+          resolve();
+        });
+        setTimeout(() => ctl.abort(), 5);
+      });
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runAgent({
+      llm,
+      model: "m",
+      tools: [tool],
+      messages: [userMsg("hi")],
+      signal: ctl.signal,
+    }),
+    (e: unknown) => e instanceof DOMException && e.name === "AbortError",
+  );
+  assert.equal(aborted, true, "ctx.signal should fire even when provider is wrapped by withRetry");
+});
+
+test("ctx.signal: placeholder never-aborts when no source is wired", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "probe", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  let observed!: AbortSignal;
+  const tool: ToolDef = {
+    name: "probe",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      observed = ctx.signal;
+      return "ok";
+    },
+  };
+  await runAgent({ llm, model: "m", tools: [tool], messages: [userMsg("hi")] });
+  // After the run completes, the placeholder signal should still be unaborted
+  // — i.e., no unrelated abort source has leaked into it.
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(observed.aborted, false);
+});
+
+test("ctx.signal: streamAgent path delivers same signal contract", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "wait", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const ctl = new AbortController();
+  let aborted = false;
+  const tool: ToolDef = {
+    name: "wait",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      await new Promise<void>((resolve) => {
+        ctx.signal.addEventListener("abort", () => {
+          aborted = true;
+          resolve();
+        });
+        setTimeout(() => ctl.abort(), 5);
+      });
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    (async () => {
+      for await (const _ev of streamAgent({
+        llm,
+        model: "m",
+        tools: [tool],
+        messages: [userMsg("hi")],
+        signal: ctl.signal,
+      })) {
+        void _ev;
+      }
+    })(),
+    (e: unknown) => e instanceof DOMException && e.name === "AbortError",
+  );
+  assert.equal(aborted, true);
 });
