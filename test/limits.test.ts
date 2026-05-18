@@ -429,6 +429,68 @@ test("ctx.signal: resumeAgent uses the resume call's signal, not the original", 
   assert.equal(observed!.aborted, false, "resume signal is fresh and not aborted");
 });
 
+test("ctx.signal: withRetry preserves signal across the wrapped complete()", async () => {
+  // Regression: withRetry.complete previously dropped the {signal} second-arg,
+  // so handlers under withRetry never saw agent-abort propagation. This test
+  // confirms the signal reaches ctx.signal even when the provider is wrapped.
+  const { withRetry } = await import("../src/llm/retry.ts");
+  const base = mockProvider([
+    response([toolUse("u1", "wait", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  const llm = withRetry(base, { maxAttempts: 2, baseMs: 1 });
+  const ctl = new AbortController();
+  let aborted = false;
+  const tool: ToolDef = {
+    name: "wait",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      await new Promise<void>((resolve) => {
+        ctx.signal.addEventListener("abort", () => {
+          aborted = true;
+          resolve();
+        });
+        setTimeout(() => ctl.abort(), 5);
+      });
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runAgent({
+      llm,
+      model: "m",
+      tools: [tool],
+      messages: [userMsg("hi")],
+      signal: ctl.signal,
+    }),
+    (e: unknown) => e instanceof DOMException && e.name === "AbortError",
+  );
+  assert.equal(aborted, true, "ctx.signal should fire even when provider is wrapped by withRetry");
+});
+
+test("ctx.signal: placeholder never-aborts when no source is wired", async () => {
+  const llm = mockProvider([
+    response([toolUse("u1", "probe", {})], "tool_use"),
+    response([text("ok")], "end_turn"),
+  ]);
+  let observed!: AbortSignal;
+  const tool: ToolDef = {
+    name: "probe",
+    description: "",
+    inputSchema: {},
+    handler: async (_input, ctx: ToolContext) => {
+      observed = ctx.signal;
+      return "ok";
+    },
+  };
+  await runAgent({ llm, model: "m", tools: [tool], messages: [userMsg("hi")] });
+  // After the run completes, the placeholder signal should still be unaborted
+  // — i.e., no unrelated abort source has leaked into it.
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(observed.aborted, false);
+});
+
 test("ctx.signal: streamAgent path delivers same signal contract", async () => {
   const llm = mockProvider([
     response([toolUse("u1", "wait", {})], "tool_use"),

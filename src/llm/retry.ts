@@ -76,17 +76,20 @@ function computeDelay(err: LLMError, attempt: number, opts: ResolvedOpts): numbe
 export function withRetry(llm: LLMProvider, opts: RetryOpts = {}): LLMProvider {
   const o = resolve(opts);
 
-  const complete = async (req: CompletionRequest): Promise<CompletionResponse> => {
+  const complete = async (
+    req: CompletionRequest,
+    completeOpts?: { signal?: AbortSignal },
+  ): Promise<CompletionResponse> => {
     let attempt = 0;
     while (true) {
       attempt++;
       try {
-        return await llm.complete(req);
+        return await llm.complete(req, completeOpts);
       } catch (err) {
         if (!isRetryable(err) || attempt >= o.maxAttempts) throw err;
         const delayMs = computeDelay(err, attempt, o);
         o.onRetry?.({ error: err, attempt, delayMs });
-        await o.sleep(delayMs);
+        await o.sleep(delayMs, completeOpts?.signal);
       }
     }
   };

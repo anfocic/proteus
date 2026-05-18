@@ -185,7 +185,13 @@ export type StreamingChatHandler = (
 ) => AsyncGenerator<ChatStreamEvent, void, void>;
 
 export function createStreamingChatHandler<TServices>(
-  config: Omit<ChatHandlerConfig<TServices>, "pendingStore" | "evaluate" | "maxEvaluatorAttempts">,
+  // signal is omitted: streaming consumers supply abort per-request via the
+  // second-arg `opts.signal`, not as a single config-wide signal. Mixing both
+  // would force an `AbortSignal.any` compose with no clear win.
+  config: Omit<
+    ChatHandlerConfig<TServices>,
+    "pendingStore" | "evaluate" | "maxEvaluatorAttempts" | "signal"
+  >,
 ): StreamingChatHandler {
   return async function* (req, opts) {
     const history = await config.store.get(req.sessionId);
